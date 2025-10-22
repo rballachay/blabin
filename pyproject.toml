@@ -1,0 +1,94 @@
+[project]
+name = "blabin" # Renamed
+version = "0.1.0"
+description = "A starter kit for building robust MCP servers in Python with best practices." # Updated
+authors = [{ name = "Your Name", email = "your.email@example.com" }] # UPDATE THIS
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "MIT" }
+classifiers = [ # Updated
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: Communications", # Added for MCP
+    "Typing :: Typed",
+]
+dependencies = [
+    "mcp[cli]>=0.1.0",           # MCP SDK + CLI tools (Adjust version as needed)
+    "pydantic>=2.6.0",           # Core validation library
+    "pydantic-settings>=2.0.0",  # For loading config from env/.env
+    "python-dotenv>=1.0.0",      # For .env loading (useful layer)
+    "httpx>=0.27.0",             # Keep if example tool might use HTTP later
+]
+
+[project.optional-dependencies]
+# Keep dev tools separate for clarity
+dev = [
+    "ruff",
+    "mypy",
+    "pytest",
+    "pytest-cov",
+    "pre-commit",
+    "types-requests",          # If using httpx
+    # Add other dev dependencies here if needed
+]
+
+[project.urls]
+# UPDATE THESE URLs
+Homepage = "https://github.com/yourusername/mcp-server-starter-py"
+Documentation = "https://github.com/yourusername/mcp-server-starter-py#readme"
+Repository = "https://github.com/yourusername/mcp-server-starter-py.git"
+Issues = "https://github.com/yourusername/mcp-server-starter-py/issues"
+
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv] # Keep uv configuration
+# Example: install dev dependencies by default with `uv sync` or `uv pip install .`
+# default-groups = ["dev"]
+# Optional: Add constraints or overrides if needed
+# constraint-dependencies = ["some-package<2.0"]
+# override-dependencies = ["another-package==1.5"]
+
+[tool.ruff] # Keep ruff config
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "UP", # pyupgrade
+    ]
+ignore = ["E501"] # Ignore line length handled by formatter
+# Add more ignores if needed, e.g., ignore ANN in tests if not annotating everything
+
+[tool.ruff.format]
+# Optional: Add any specific formatting config if needed (defaults are good)
+quote-style = "single"
+
+[tool.mypy] # Update mypy config
+mypy_path = "src" # Point to src directory
+python_version = "3.10"
+strict = true
+# Ignore missing imports for libraries that don't have stubs easily available
+# Adjust as needed
+ignore_missing_imports = true
+# Explicitly disallow Any unless truly necessary
+# disallow_any_explicit = true
+# warn_unreachable = true # Useful for finding dead code
+
+# [[tool.mypy.overrides]] # Example override if mcp causes issues
+# module = ["mcp.*"]
+# ignore_missing_imports = true

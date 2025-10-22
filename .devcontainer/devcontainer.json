@@ -1,0 +1,32 @@
+{
+    "name": "Python Development",
+    "build": {
+      "dockerfile": "Dockerfile",
+      "context": ".."
+    },
+    "customizations": {
+      "vscode": {
+        "extensions": [
+          "ms-python.python",
+          "ms-python.vscode-pylance",
+          "charliermarsh.ruff",
+          "matangover.mypy"
+        ],
+        "settings": {
+          "python.linting.enabled": true,
+          "editor.formatOnSave": true,
+          "python.analysis.typeCheckingMode": "basic",
+          "[python]": {
+            "editor.defaultFormatter": "charliermarsh.ruff",
+            "editor.formatOnSave": true,
+            "editor.codeActionsOnSave": {
+              "source.organizeImports": "explicit",
+              "source.fixAll": "explicit"
+            }
+          }
+        }
+      }
+    },
+    "postCreateCommand": "uv sync && pip install .[dev] && pre-commit install",
+    "remoteUser": "vscode"
+  }
