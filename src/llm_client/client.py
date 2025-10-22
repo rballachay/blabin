@@ -1,31 +1,27 @@
 from collections.abc import AsyncGenerator
 
-import httpx
+from google import genai
 
 
 class AsyncLLMClient:
-    def __init__(self, api_url: str, api_key: str):
-        self.api_url = api_url
-        self.api_key = api_key
-        self.client = httpx.AsyncClient(
-            headers={
-                'x-goog-api-key': self.api_key,
-                'Content-Type': 'application/json',
-            }
-        )
-
-    async def send_request(self, prompt: str) -> AsyncGenerator[str, None]:
+    def __init__(self, api_key: str):
         """
-        Stream the Gemini LLM response as it arrives (SSE-style).
+        Initializes the Gemini client with the provided API key.
+        """
+        self.client = genai.Client(api_key=api_key)
+
+    async def send_request(self, prompt: str) -> AsyncGenerator[str]:
+        """
+        Stream the Gemini LLM response as it arrives.
         Yields text chunks from the server.
         """
-        payload = {'contents': [{'parts': [{'text': prompt}]}]}
-
-        async with self.client.stream('POST', self.api_url, json=payload) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if line.strip():
-                    yield line
+        async for chunk in await self.client.aio.models.generate_content_stream(
+            model='gemini-2.0-flash', contents=prompt
+        ):
+            yield chunk.text
 
     async def close(self) -> None:
-        await self.client.aclose()
+        """
+        Close the client if needed (placeholder for compatibility).
+        """
+        pass  # genai.Client() does not need explicit closing

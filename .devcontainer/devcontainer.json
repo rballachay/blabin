@@ -28,5 +28,9 @@
       }
     },
     "postCreateCommand": "uv sync && pip install .[dev] && pre-commit install",
-    "remoteUser": "vscode"
+    "remoteUser": "vscode",
+    "runArgs": [
+            "--device=/dev/snd:/dev/snd"
+    ]
+
   }
