@@ -25,10 +25,10 @@ dependencies = [
     "python-dotenv>=1.0.0",      # For .env loading (useful layer)
     "httpx>=0.27.0",             # Keep if example tool might use HTTP later
     "google-genai>=1.46.0",      # Necessary for accessing gemini
-    "speechrecognition>=3.14.3", # Speech recognition
-    "faster-whisper>=1.2.0",     # Speech to text
     "pyaudio>=0.2.14",           # Required for recording audio
-    "soundfile>=0.13.1"          # Dependency of speechrecognition
+    "torchaudio==2.8.0",         # Anything above 2.9.0 breaks silero-vad
+    "silero-vad>=6.0.0",         # Voice activity detection w pytorch
+    "librosa"                    # used for sample rate change
 ]
 
 [project.optional-dependencies]
