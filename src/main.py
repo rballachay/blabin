@@ -9,8 +9,12 @@ import pyaudio
 import torch
 from dotenv import load_dotenv
 
-from src.llm_client.client import AsyncLLMClient
+from src.llm.agent import ConversationAgent
+from src.llm.client import AsyncLLMClient
 from src.vad.async_vad import AsyncVAD
+
+# GEMINI TTS only has 15 calls/day, disable for development
+SPEAK_OUTPUT = False
 
 # Load environment variables
 load_dotenv()
@@ -66,12 +70,14 @@ class AudioProcessor:
         self,
         llm_client: AsyncLLMClient,
         vad: AsyncVAD,
+        agent: ConversationAgent,
         input_device_index: int | None = None,
         simulate_audio: bool = False,
         audio_file: str | None = None,
     ):
         self.llm_client = llm_client
         self.vad = vad
+        self.agent = agent
         self.input_device_index = input_device_index
         self.pa = pyaudio.PyAudio()
         self.output_stream = None
@@ -107,12 +113,12 @@ class AudioProcessor:
                 }
             ]
 
-            # Collect response chunks
-            response_text = ''
-            async for chunk in self.llm_client.send_request(prompt):
-                response_text += chunk
+            # Collect response
+            transcription = await self.llm_client.send_request(prompt)
 
-            return response_text.strip()
+            # process with the agent
+            response = await self.agent.process_message(transcription.strip())
+            return response.strip()
 
         except Exception as e:
             print(f'Error processing audio: {e}')
@@ -143,25 +149,24 @@ class AudioProcessor:
     async def run(self) -> None:
         """Main processing loop"""
         print('Starting audio processing... Press Ctrl+C to stop')
-
+        self.vad._reset_state()
         try:
             if self.simulate_audio:
                 while True:
                     audio_chunk = self.audio_simulator.read(NUM_SAMPLES)
-
                     # Process through VAD
                     if hasattr(self.vad, '_process_frame'):
                         segment = await self.vad.process_audio_chunk(audio_chunk)
                         if segment is not None:
-                            print(segment.shape)
-                            save_wav('data/detected-speech.wav', segment)
                             print('\nSpeech detected! Processing...')
                             response = await self.process_audio_segment(segment)
                             print(f'Understood: {response}')
                             if response:
-                                audio_bytes = await self.llm_client.text_to_speech(response)
-                                await self.play_audio(audio_bytes)
-                    # await asyncio.sleep(1)  # Simulate real-time
+                                if SPEAK_OUTPUT and self.agent.should_speak_response(response):
+                                    audio_bytes = await self.llm_client.text_to_speech(response)
+                                    await self.play_audio(audio_bytes)
+                                else:
+                                    print(response)
             else:
                 async for segment in self.vad.detect_from_microphone(
                     self.pa,
@@ -175,8 +180,11 @@ class AudioProcessor:
                     response = await self.process_audio_segment(segment)
                     print(f'Understood: {response}')
                     if response:
-                        audio_bytes = await self.llm_client.text_to_speech(response)
-                        await self.play_audio(audio_bytes)
+                        if SPEAK_OUTPUT:
+                            audio_bytes = await self.llm_client.text_to_speech(response)
+                            await self.play_audio(audio_bytes)
+                        else:
+                            print(response)
 
         except KeyboardInterrupt:
             print('\nStopping audio processing...')
@@ -201,11 +209,13 @@ async def main() -> None:
         speech_pad_ms=30,
     )
 
-    llm_client = AsyncLLMClient(api_key=os.getenv('GEMINI_API_KEY', ''))
+    gemini_key = os.getenv('GEMINI_API_KEY', '')
+    llm_client = AsyncLLMClient(api_key=gemini_key)
+    agent = ConversationAgent(api_key=gemini_key)
 
     # Create and run processor with audio simulation from file
     processor = AudioProcessor(
-        llm_client, vad, simulate_audio=True, audio_file='data/testing-audio-2.wav'
+        llm_client, vad, agent, simulate_audio=True, audio_file='tests/data/input-audio.wav'
     )
     await processor.run()
 

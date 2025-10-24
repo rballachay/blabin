@@ -1,5 +1,4 @@
 import asyncio
-from collections.abc import AsyncGenerator
 from typing import Any
 
 from google import genai
@@ -13,15 +12,15 @@ class AsyncLLMClient:
         """
         self.client = genai.Client(api_key=api_key)
 
-    async def send_request(self, prompt: list[dict[str, Any]]) -> AsyncGenerator[str, None]:
+    async def send_request(self, prompt: list[dict[str, Any]]) -> str:
         """
         Stream the Gemini LLM response as it arrives.
-        Yields text chunks from the server.
+        Returns text chunks from the server.
         """
-        async for chunk in await self.client.aio.models.generate_content_stream(
+        response = await self.client.aio.models.generate_content(
             model='gemini-2.0-flash', contents=prompt
-        ):
-            yield chunk.text
+        )
+        return response.text
 
     async def text_to_speech(self, text: str) -> bytes:
         """

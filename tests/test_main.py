@@ -1,6 +1,5 @@
 import asyncio
 import wave
-from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -10,14 +9,20 @@ import numpy as np
 import pytest
 import torch
 
-from src.llm_client.client import AsyncLLMClient
+import src.main as main_module
+from src.llm.agent import ConversationAgent
+from src.llm.client import AsyncLLMClient
 from src.main import AudioProcessor, AudioSimulator
 from src.vad.async_vad import AsyncVAD
+
+# Enable actual audio playback during tests, this is mocked anyways
+main_module.SPEAK_OUTPUT = True
 
 # Test data paths
 TEST_DATA_DIR = Path(__file__).parent.parent / 'tests' / 'data'
 TEST_AUDIO_PATH = TEST_DATA_DIR / 'input-audio.wav'
 TEST_TTS_RESPONSE = TEST_DATA_DIR / 'tts-response.wav'
+TEST_AGENT_RESPONSE_FILE = TEST_DATA_DIR / 'test-agent-response.txt'
 
 
 @pytest.fixture  # type: ignore[misc]
@@ -40,29 +45,50 @@ def test_audio_segment() -> np.ndarray:
 
 
 @pytest.fixture  # type: ignore[misc]
-def mock_llm_client(request: dict[str, Any]) -> AsyncLLMClient:
+def mock_llm_client() -> AsyncLLMClient:
     """Create a mock LLM client with configurable responses"""
     client = AsyncMock(spec=AsyncLLMClient)
 
-    # We'll capture the first real API response and use it for mocking
-    # You'll need to run the test once with real API to get this
-    async def mock_send_request(prompt: str) -> AsyncGenerator[Any]:
-        yield "Bonjour je suis Anya, j'adore manger de la fruit et jouer au sport!"  # Replace with actual response
+    async def mock_send_request(prompt: Any) -> str:
+        # Return a fake transcription (a single yield to mimic streaming)
+        return "Bonjour. Qu'est ce qui te rend heureux dans la vie?"
 
     client.send_request = mock_send_request
 
-    # Mock TTS - first run with real API to get example response
+    # Mock TTS - load example WAV and return raw bytes (float32 bytes okay for mock)
     audio, _ = librosa.load(TEST_TTS_RESPONSE, sr=16000, mono=True)
-
     client.text_to_speech = AsyncMock(return_value=audio.tobytes())
 
     return client
 
 
+class DummyAgent:
+    def __init__(self, text: str):
+        self._text = text
+
+    async def process_message(self, text: str) -> str:
+        return self._text
+
+    def should_speak_response(self, response: str) -> bool:
+        return True
+
+
+@pytest.fixture  # type: ignore[misc]
+def conversation_agent() -> DummyAgent:
+    """Create a simple mocked ConversationAgent that returns file contents."""
+
+    resp_text = ''
+    if TEST_AGENT_RESPONSE_FILE.exists():
+        resp_text = TEST_AGENT_RESPONSE_FILE.read_text(encoding='utf-8').strip()
+    else:
+        resp_text = 'Mock agent response (file missing).'
+
+    return DummyAgent(resp_text)
+
+
 @pytest.fixture  # type: ignore[misc]
 def vad_model() -> torch.nn.Module:
     """Load the real VAD model"""
-
     model, _ = torch.hub.load(
         repo_or_dir='snakers4/silero-vad', model='silero_vad', force_reload=False
     )
@@ -70,8 +96,12 @@ def vad_model() -> torch.nn.Module:
 
 
 @pytest.fixture  # type: ignore[misc]
-def audio_processor(vad_model: torch.nn.Module, mock_llm_client: AsyncLLMClient) -> AudioProcessor:
-    """Create AudioProcessor with real VAD and mock LLM"""
+def audio_processor(
+    vad_model: torch.nn.Module,
+    mock_llm_client: AsyncLLMClient,
+    conversation_agent: ConversationAgent,
+) -> AudioProcessor:
+    """Create AudioProcessor with real VAD, mock LLM and mocked agent"""
     vad = AsyncVAD(
         vad_model,
         threshold=0.5,
@@ -81,7 +111,11 @@ def audio_processor(vad_model: torch.nn.Module, mock_llm_client: AsyncLLMClient)
     )
 
     return AudioProcessor(
-        llm_client=mock_llm_client, vad=vad, simulate_audio=True, audio_file=str(TEST_AUDIO_PATH)
+        llm_client=mock_llm_client,
+        vad=vad,
+        agent=conversation_agent,
+        simulate_audio=True,
+        audio_file=str(TEST_AUDIO_PATH),
     )
 
 
@@ -137,10 +171,10 @@ async def test_vad_detection_with_real_audio(audio_processor: AudioProcessor) ->
                     detected_segments += 1
                     print(f'Detected speech segment {detected_segments}: {segment.shape}')
 
-    try:
-        await asyncio.wait_for(_async_test_fun(), timeout=5.0)  # Run for max 5 seconds_
-    except asyncio.TimeoutError:
-        pass
+        try:
+            await asyncio.wait_for(_async_test_fun(), timeout=5.0)  # Run for max 5 seconds_
+        except asyncio.TimeoutError:
+            pass
 
-    assert detected_segments > 0, 'Should detect at least one speech segment'
-    print(f'Detected {detected_segments} speech segments')
+        assert detected_segments > 0, 'Should detect at least one speech segment'
+        print(f'Detected {detected_segments} speech segments')

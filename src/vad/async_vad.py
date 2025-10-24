@@ -222,9 +222,18 @@ class AsyncVAD:
         Process a chunk of audio data, maintaining state between calls.
         Returns detected speech segment if one is ready, None otherwise.
 
+        Pads chunks to frame_size if needed.
+
         Args:
             chunk: numpy array of float32 audio data (-1.0 to 1.0 range)
         """
+
+        if self.target_sr == 16000:
+            if not chunk.size == (512,):
+                chunk = np.pad(chunk, (0, 512 - chunk.shape[0]), mode='constant', constant_values=0)
+        else:
+            raise Exception('Not implemented for target_sr other than 16 khz')
+
         # Store the frame
         self.audio_frames.append(chunk.copy())
 
