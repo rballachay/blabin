@@ -103,7 +103,6 @@ class AsyncVAD:
                     # already counted those frames
                     return None
         elif self.state == 'in_speech':
-            print('IN SPEECH')
             if conf >= self.threshold:
                 self.speech_frames_accum += 1
                 self.silence_after_speech = 0

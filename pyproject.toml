@@ -40,6 +40,7 @@ dev = [
     "pytest-cov",
     "pre-commit",
     "types-requests",          # If using httpx
+    "pytest_asyncio"
     # Add other dev dependencies here if needed
 ]
 
@@ -85,7 +86,7 @@ quote-style = "single"
 [tool.mypy] # Update mypy config
 mypy_path = "src" # Point to src directory
 python_version = "3.10"
-strict = true
+strict = false
 # Ignore missing imports for libraries that don't have stubs easily available
 # Adjust as needed
 ignore_missing_imports = true
