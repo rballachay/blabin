@@ -28,8 +28,8 @@ dependencies = [
     "pyaudio>=0.2.14",           # Required for recording audio
     "torchaudio==2.8.0",         # Anything above 2.9.0 breaks silero-vad
     "silero-vad>=6.0.0",         # Voice activity detection w pytorch
-    "librosa=>0.11.0",           # used for sample rate change
-    "langchain=>1.0.2",          # Agent
+    "librosa>=0.11.0",           # used for sample rate change
+    "langchain>=1.0.2",          # Agent
     "langchain-community>=0.4",
     "langchain-google-genai>=3.0.0"
 ]
