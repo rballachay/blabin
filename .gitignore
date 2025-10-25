@@ -1,5 +1,5 @@
-# ignore special testing files
-data/*
+# ignore special files
+data/*.db
 mlruns/*
 
 # Byte-compiled / optimized / DLL files

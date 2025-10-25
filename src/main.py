@@ -150,6 +150,15 @@ class AudioProcessor:
         """Main processing loop"""
         print('Starting audio processing... Press Ctrl+C to stop')
         self.vad._reset_state()
+
+        # start everything by saying hello
+        greeting = self.agent.say_hello()
+        if SPEAK_OUTPUT and self.agent.should_speak_response(greeting):
+            audio_bytes = await self.llm_client.text_to_speech(greeting)
+            await self.play_audio(audio_bytes)
+        else:
+            print(greeting)
+
         try:
             if self.simulate_audio:
                 while True:
