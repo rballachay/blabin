@@ -1,5 +1,6 @@
 # ignore special testing files
 data/*
+mlruns/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

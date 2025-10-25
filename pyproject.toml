@@ -31,7 +31,8 @@ dependencies = [
     "librosa>=0.11.0",           # used for sample rate change
     "langchain>=1.0.2",          # Agent
     "langchain-community>=0.4",
-    "langchain-google-genai>=3.0.0"
+    "langchain-google-genai>=3.0.0",
+    "mlflow>=3.5.1"
 ]
 
 [project.optional-dependencies]
@@ -43,7 +44,8 @@ dev = [
     "pytest-cov",
     "pre-commit",
     "types-requests",          # If using httpx
-    "pytest_asyncio"
+    "pytest_asyncio",
+    "types-pyyaml"
     # Add other dev dependencies here if needed
 ]
 
