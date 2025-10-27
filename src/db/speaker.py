@@ -299,3 +299,10 @@ class SpeakerDB:
                 continue
 
         return best_name, float(best_score)
+
+    def delete_speaker_by_name(self, name: str) -> bool:
+        """Delete a speaker by name. Returns True if a row was deleted."""
+        with self._get_db() as conn:
+            cur = conn.execute('DELETE FROM speakers WHERE name = ?', (name,))
+            conn.commit()
+            return cur.rowcount > 0

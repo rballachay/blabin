@@ -18,7 +18,7 @@ class AsyncLLMClient:
         Returns text chunks from the server.
         """
         response = await self.client.aio.models.generate_content(
-            model='gemini-2.0-flash', contents=prompt
+            model='gemini-2.5-flash', contents=prompt
         )
         return response.text
 
@@ -66,7 +66,7 @@ class AsyncLLMClient:
         ]
 
         response = await self.client.aio.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-2.5-flash',
             contents=prompt,
         )
         text = response.text.strip().lower()
@@ -94,7 +94,7 @@ class AsyncLLMClient:
             },
         ]
         response = await self.client.aio.models.generate_content(
-            model='gemini-2.0-flash', contents=prompt
+            model='gemini-2.5-flash', contents=prompt
         )
 
         text = response.text.strip().upper()
@@ -116,7 +116,7 @@ class AsyncLLMClient:
                         }
                     },
                     {
-                        'text': 'What is being said in this audio? Only return the transcription, no other text.'
+                        'text': 'What is being said in this audio? This will be in french. Only return the transcription, no other text.'
                     },
                 ],
             }

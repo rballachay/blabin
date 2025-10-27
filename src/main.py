@@ -42,7 +42,10 @@ class AudioSimulator:
         """Return the next VAD-detected segment (float32 @ 16k) or None when finished."""
         if self._aiter is None:
             self._aiter = self.async_vad.detect_from_file(self.file_path).__aiter__()
-        return await self._aiter.__anext__()
+        try:
+            return await self._aiter.__anext__()
+        except StopAsyncIteration:
+            return None
 
 
 def save_wav(file_path: str, audio: np.ndarray, sample_rate: int = 16000) -> None:
@@ -83,6 +86,9 @@ class AudioProcessor:
             self.audio_simulator = AudioSimulator(audio_file, vad)
         self.name = name  # this can be set for the session
 
+        # Track if we already persisted this session's speaker embedding
+        self._speaker_persisted = False
+
     def _segment_to_wav_bytes(self, segment: np.ndarray, sr: int = 16000) -> bytes:
         """Convert mono float32 segment [-1,1] to PCM16 WAV bytes."""
         seg = np.asarray(segment, dtype=np.float32).ravel()
@@ -113,22 +119,11 @@ class AudioProcessor:
                     await asyncio.to_thread(self.output_stream.write, data)
                     data = wave_file.readframes(chunk_size)
 
-                    self.output_stream.stop_stream()
-                    self.output_stream.close()
-                    self.output_stream = None
-
-    async def _identify_speaker(self, segment: np.ndarray) -> str:
-        # attempt speaker identification from the voiced segment
-        name, _ = self.voice_identifier.identify_speaker(segment)
-
-        # unknown, now need to ask for their name
-        if name == 'unknown':
-            await self.speak('Je ne crois pas vous connaître. Comment vous appelez-vous?')
-        else:
-            # ask user to confirm identity
-            confirm_prompt = f'Allo! Est-ce que vous êtes bien {name}?'
-            await self.speak(confirm_prompt)
-        return name
+            # Close after playback completes
+            if self.output_stream:
+                self.output_stream.stop_stream()
+                self.output_stream.close()
+                self.output_stream = None
 
     async def run(self) -> None:
         """Main processing loop"""
@@ -148,63 +143,47 @@ class AudioProcessor:
                     if segment is None:
                         break
 
-                    print('\nSpeech detected! Processing...')
+                    # Remember last voiced segment for potential speaker embedding update
+                    last_segment = segment.copy()
+
+                    # Transcribe the segment
                     audio_bytes = self._segment_to_wav_bytes(segment)
-                    print(len(audio_bytes))
                     transcription = await self.llm_client.transcribe_bytes(audio_bytes)
-                    print(f'Speaker {self.name}: ', transcription)
+                    print(f'User: {transcription}')
 
-                    # check if there is a current speaker in the session
-                    if not self.agent.current_speaker:
-                        if self.name is None:
-                            # this means there is no existing name, so try
-                            # to identify using voice recognition
-                            name = await self._identify_speaker(segment)
-                            # use this for voice recognition
-                            last_segment = segment.copy()
-                        elif (name == 'unknown') and not (last_segment.shape == (0,)):
-                            audio_bytes = self._segment_to_wav_bytes(segment)
-                            name = await self.llm_client.get_speaker_name(audio_bytes)
-                        else:
-                            confirmation = await self.llm_client.is_confirmation(transcription)
-                            print(confirmation)
-                            if confirmation:
-                                self.agent.current_speaker = name
+                    # Let the ConversationAgent (LangGraph) handle voice ID first, then text fallback
+                    response = await self.agent.process_message(
+                        transcription, audio_segment=segment
+                    )
+                    if response:
+                        await self.speak(response)
 
-                                if self.voice_identifier.db.name_exists(name):
-                                    await self.speak(f'Ravi de vous revoir, {name}!')
+                    # If the agent captured a speaker name this turn, persist/update embedding once
+                    if self.agent.current_speaker and not self._speaker_persisted:
+                        name = self.agent.current_speaker
+                        try:
+                            existed = self.voice_identifier.db.name_exists(name)
+                        except Exception:
+                            existed = False
+                        try:
+                            # confirm_and_update creates if missing, updates incrementally if exists
+                            ok = await self.voice_identifier.confirm_and_update(name, last_segment)
+                            if ok:
+                                self._speaker_persisted = True
+                                if not existed:
+                                    print(f"[info] Created speaker '{name}' in DB.")
                                 else:
-                                    await self.speak(f'Ravi de vous rencontrer, {name}')
-                                await self.voice_identifier.confirm_and_update(name, last_segment)
-                    else:
-                        # proceed with regular processing (transcription -> agent)
-                        response = await self.agent.process_message(transcription)
-                        print(f'Understood: {response}')
-                        if response:
-                            await self.speak(response)
+                                    print(
+                                        f"[info] Updated embedding for returning speaker '{name}'."
+                                    )
+                        except Exception as e:
+                            print(f"[warn] Failed to persist speaker '{name}': {e}")
 
-                    time.sleep(1)  # await, otherwise we get a 500 error
+                    time.sleep(1)  # small delay to avoid API throttling
 
             else:
-                # Implement this later
+                # TODO: implement microphone branch similarly by feeding segments through VAD and the agent
                 pass
-                # async for segment in self.vad.detect_from_microphone(
-                #    self.pa,
-                #    input_device_index=self.input_device_index,
-                #    sample_rate=SAMPLE_RATE,
-                #    chunk_size=CHUNK,
-                #    channels=CHANNELS,
-                #    format=FORMAT,
-                # ):
-                #    print('\nSpeech detected! Processing...')
-                #    # response = await self.process_audio_segment(segment)
-                #    print(f'Understood: {response}')
-                #    if response:
-                #        if SPEAK_OUTPUT:
-                #            audio_bytes = await self.llm_client.text_to_speech(response)
-                #            await self.play_audio(audio_bytes)
-                #        else:
-                #            print(response)
 
         except KeyboardInterrupt:
             print('\nStopping audio processing...')
@@ -239,8 +218,8 @@ async def main() -> None:
 
     gemini_key = os.getenv('GEMINI_API_KEY', '')
     llm_client = AsyncLLMClient(api_key=gemini_key)
-    agent = ConversationAgent(api_key=gemini_key)
     voice_identifier = VoiceIdentifier(db_path='data/speakers.db', confidence=0.5)
+    agent = ConversationAgent(api_key=gemini_key, voice_identifier=voice_identifier)
 
     # Create and run processor with audio simulation from file
     processor = AudioProcessor(
