@@ -1,14 +1,16 @@
 import asyncio
 import io
 import os
+import time
 import wave
+from collections.abc import AsyncIterator
 
-import librosa
 import numpy as np
 import pyaudio
 import torch
 from dotenv import load_dotenv
 
+from src.db.speaker import VoiceIdentifier
 from src.llm.agent import ConversationAgent
 from src.llm.client import AsyncLLMClient
 from src.vad.async_vad import AsyncVAD
@@ -31,24 +33,16 @@ TARGET_SR = 16000
 class AudioSimulator:
     """Simulates microphone input by reading from a WAV file."""
 
-    def __init__(self, file_path: str):
+    def __init__(self, file_path: str, async_vad: AsyncVAD):
         self.file_path = file_path
-        self.audio_data, self.sr = self._load_audio_file()
-        self.position = 0
+        self.async_vad = async_vad
+        self._aiter: None | AsyncIterator[np.ndarray] = None  # async iterator over VAD segments
 
-    def _load_audio_file(self) -> tuple[np.ndarray, int]:
-        """Load audio data from a WAV file."""
-        audio, sr = librosa.load(self.file_path, sr=TARGET_SR, mono=True)
-        return audio, sr
-
-    def read(self, chunk_size: int) -> np.ndarray:
-        """Read next chunk of audio data."""
-        if self.position >= len(self.audio_data):
-            return np.array([], dtype=np.int16)  # End of audio
-
-        chunk = self.audio_data[self.position : self.position + chunk_size]
-        self.position += chunk_size
-        return chunk
+    async def read(self) -> np.ndarray | None:
+        """Return the next VAD-detected segment (float32 @ 16k) or None when finished."""
+        if self._aiter is None:
+            self._aiter = self.async_vad.detect_from_file(self.file_path).__aiter__()
+        return await self._aiter.__anext__()
 
 
 def save_wav(file_path: str, audio: np.ndarray, sample_rate: int = 16000) -> None:
@@ -71,58 +65,35 @@ class AudioProcessor:
         llm_client: AsyncLLMClient,
         vad: AsyncVAD,
         agent: ConversationAgent,
+        voice_identifier: VoiceIdentifier,
         input_device_index: int | None = None,
         simulate_audio: bool = False,
         audio_file: str | None = None,
+        name: str | None = None,
     ):
         self.llm_client = llm_client
         self.vad = vad
         self.agent = agent
+        self.voice_identifier = voice_identifier
         self.input_device_index = input_device_index
         self.pa = pyaudio.PyAudio()
         self.output_stream = None
         self.simulate_audio = simulate_audio
         if simulate_audio and audio_file:
-            self.audio_simulator = AudioSimulator(audio_file)
+            self.audio_simulator = AudioSimulator(audio_file, vad)
+        self.name = name  # this can be set for the session
 
-    async def process_audio_segment(self, segment: np.ndarray) -> str:
-        """Process detected speech segment through LLM"""
-        try:
-            byte_io = io.BytesIO()
-            with wave.open(byte_io, 'wb') as wav_file:
-                wav_file.setnchannels(1)  # mono
-                wav_file.setsampwidth(2)  # 16-bit
-                wav_file.setframerate(self.vad.target_sr)
-                wav_file.writeframes((segment * 32768).astype(np.int16).tobytes())
-
-            audio_bytes = byte_io.getvalue()
-
-            # Send to LLM with audio transcription prompt
-            prompt = [
-                {
-                    'role': 'user',
-                    'parts': [
-                        {
-                            'inline_data': {
-                                'mime_type': 'audio/wav',
-                                'data': audio_bytes,
-                            }
-                        },
-                        {'text': 'What is being said in this audio?'},
-                    ],
-                }
-            ]
-
-            # Collect response
-            transcription = await self.llm_client.send_request(prompt)
-
-            # process with the agent
-            response = await self.agent.process_message(transcription.strip())
-            return response.strip()
-
-        except Exception as e:
-            print(f'Error processing audio: {e}')
-            return ''
+    def _segment_to_wav_bytes(self, segment: np.ndarray, sr: int = 16000) -> bytes:
+        """Convert mono float32 segment [-1,1] to PCM16 WAV bytes."""
+        seg = np.asarray(segment, dtype=np.float32).ravel()
+        pcm16 = (np.clip(seg, -1.0, 1.0) * 32767.0).astype(np.int16)
+        buf = io.BytesIO()
+        with wave.open(buf, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(pcm16.tobytes())
+        return buf.getvalue()
 
     async def play_audio(self, audio_bytes: bytes) -> None:
         """Play audio bytes through PyAudio"""
@@ -146,6 +117,19 @@ class AudioProcessor:
                     self.output_stream.close()
                     self.output_stream = None
 
+    async def _identify_speaker(self, segment: np.ndarray) -> str:
+        # attempt speaker identification from the voiced segment
+        name, _ = self.voice_identifier.identify_speaker(segment)
+
+        # unknown, now need to ask for their name
+        if name == 'unknown':
+            await self.speak('Je ne crois pas vous connaître. Comment vous appelez-vous?')
+        else:
+            # ask user to confirm identity
+            confirm_prompt = f'Allo! Est-ce que vous êtes bien {name}?'
+            await self.speak(confirm_prompt)
+        return name
+
     async def run(self) -> None:
         """Main processing loop"""
         print('Starting audio processing... Press Ctrl+C to stop')
@@ -153,47 +137,74 @@ class AudioProcessor:
 
         # start everything by saying hello
         greeting = self.agent.say_hello()
-        if SPEAK_OUTPUT and self.agent.should_speak_response(greeting):
-            audio_bytes = await self.llm_client.text_to_speech(greeting)
-            await self.play_audio(audio_bytes)
-        else:
-            print(greeting)
+        await self.speak(greeting)
+
+        last_segment = np.array([], dtype=np.float32)
 
         try:
             if self.simulate_audio:
                 while True:
-                    audio_chunk = self.audio_simulator.read(NUM_SAMPLES)
-                    # Process through VAD
-                    if hasattr(self.vad, '_process_frame'):
-                        segment = await self.vad.process_audio_chunk(audio_chunk)
-                        if segment is not None:
-                            print('\nSpeech detected! Processing...')
-                            response = await self.process_audio_segment(segment)
-                            print(f'Understood: {response}')
-                            if response:
-                                if SPEAK_OUTPUT and self.agent.should_speak_response(response):
-                                    audio_bytes = await self.llm_client.text_to_speech(response)
-                                    await self.play_audio(audio_bytes)
-                                else:
-                                    print(response)
-            else:
-                async for segment in self.vad.detect_from_microphone(
-                    self.pa,
-                    input_device_index=self.input_device_index,
-                    sample_rate=SAMPLE_RATE,
-                    chunk_size=CHUNK,
-                    channels=CHANNELS,
-                    format=FORMAT,
-                ):
+                    segment = await self.audio_simulator.read()
+                    if segment is None:
+                        break
+
                     print('\nSpeech detected! Processing...')
-                    response = await self.process_audio_segment(segment)
-                    print(f'Understood: {response}')
-                    if response:
-                        if SPEAK_OUTPUT:
-                            audio_bytes = await self.llm_client.text_to_speech(response)
-                            await self.play_audio(audio_bytes)
+                    audio_bytes = self._segment_to_wav_bytes(segment)
+                    print(len(audio_bytes))
+                    transcription = await self.llm_client.transcribe_bytes(audio_bytes)
+                    print(f'Speaker {self.name}: ', transcription)
+
+                    # check if there is a current speaker in the session
+                    if not self.agent.current_speaker:
+                        if self.name is None:
+                            # this means there is no existing name, so try
+                            # to identify using voice recognition
+                            name = await self._identify_speaker(segment)
+                            # use this for voice recognition
+                            last_segment = segment.copy()
+                        elif (name == 'unknown') and not (last_segment.shape == (0,)):
+                            audio_bytes = self._segment_to_wav_bytes(segment)
+                            name = await self.llm_client.get_speaker_name(audio_bytes)
                         else:
-                            print(response)
+                            confirmation = await self.llm_client.is_confirmation(transcription)
+                            print(confirmation)
+                            if confirmation:
+                                self.agent.current_speaker = name
+
+                                if self.voice_identifier.db.name_exists(name):
+                                    await self.speak(f'Ravi de vous revoir, {name}!')
+                                else:
+                                    await self.speak(f'Ravi de vous rencontrer, {name}')
+                                await self.voice_identifier.confirm_and_update(name, last_segment)
+                    else:
+                        # proceed with regular processing (transcription -> agent)
+                        response = await self.agent.process_message(transcription)
+                        print(f'Understood: {response}')
+                        if response:
+                            await self.speak(response)
+
+                    time.sleep(1)  # await, otherwise we get a 500 error
+
+            else:
+                # Implement this later
+                pass
+                # async for segment in self.vad.detect_from_microphone(
+                #    self.pa,
+                #    input_device_index=self.input_device_index,
+                #    sample_rate=SAMPLE_RATE,
+                #    chunk_size=CHUNK,
+                #    channels=CHANNELS,
+                #    format=FORMAT,
+                # ):
+                #    print('\nSpeech detected! Processing...')
+                #    # response = await self.process_audio_segment(segment)
+                #    print(f'Understood: {response}')
+                #    if response:
+                #        if SPEAK_OUTPUT:
+                #            audio_bytes = await self.llm_client.text_to_speech(response)
+                #            await self.play_audio(audio_bytes)
+                #        else:
+                #            print(response)
 
         except KeyboardInterrupt:
             print('\nStopping audio processing...')
@@ -203,6 +214,14 @@ class AudioProcessor:
                 self.output_stream.close()
             self.pa.terminate()
             await self.llm_client.close()
+
+    async def speak(self, text: str) -> None:
+        """Convert text to speech and play it"""
+        if SPEAK_OUTPUT and self.agent.should_speak_response(text):
+            audio_bytes = await self.llm_client.text_to_speech(text)
+            await self.play_audio(audio_bytes)
+        else:
+            print('Agent:', text, '\n')
 
 
 async def main() -> None:
@@ -221,10 +240,16 @@ async def main() -> None:
     gemini_key = os.getenv('GEMINI_API_KEY', '')
     llm_client = AsyncLLMClient(api_key=gemini_key)
     agent = ConversationAgent(api_key=gemini_key)
+    voice_identifier = VoiceIdentifier(db_path='data/speakers.db', confidence=0.5)
 
     # Create and run processor with audio simulation from file
     processor = AudioProcessor(
-        llm_client, vad, agent, simulate_audio=True, audio_file='tests/data/input-audio.wav'
+        llm_client,
+        vad,
+        agent,
+        voice_identifier,
+        simulate_audio=True,
+        audio_file='tests/data/conversation-full.wav',
     )
     await processor.run()
 

@@ -2,74 +2,77 @@ from pathlib import Path
 
 import librosa
 import pytest
-import soundfile as sf
 import torch
+from resemblyzer import normalize_volume
+from resemblyzer.hparams import audio_norm_target_dBFS
 
 from src.db.speaker import VoiceIdentifier
 from src.vad.async_vad import AsyncVAD
 
 
 @pytest.mark.asyncio
-async def test_abby_three_recordings_match(tmp_path: Path) -> None:
+async def test_check_db_names(tmp_path: Path) -> None:
     """
-    Use three recordings for the same speaker (tests/data/voice_rec/abby-*)
-    - use AsyncVAD to extract the spoken segment from each file
-    - create a temporary DB seeded with the first recording's embedding
-    - ensure the other two recordings are recognized as the same speaker
+    Seed a single DB with one Abby and one Riley embedding (from their first recordings),
+    then ensure Abby files match Abby and Riley files match Riley (no cross-match).
     """
     data_dir = Path(__file__).parent / 'data' / 'voice_rec'
-    file1 = data_dir / 'abby-bonjour-1.wav'
-    file2 = data_dir / 'abby-bonjour-2.wav'
-    file3 = data_dir / 'abby-bonjour-3.wav'
+    abby_files = [
+        data_dir / 'abby-bonjour-1.wav',
+        data_dir / 'abby-bonjour-2.wav',
+        data_dir / 'abby-bonjour-3.wav',
+    ]
+    riley_files = [
+        data_dir / 'riley-bonjour-1.wav',
+        data_dir / 'riley-bonjour-2.wav',
+        data_dir / 'riley-bonjour-3.wav',
+    ]
 
-    assert file1.exists() and file2.exists() and file3.exists(), (
-        'Expected test audio files in tests/data/voice_rec/'
-    )
+    for p in abby_files + riley_files:
+        assert p.exists(), f'Expected test audio file {p} to exist'
 
     # Load VAD model used by AsyncVAD
     vad_model, _ = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad')
     vad = AsyncVAD(vad_model)
 
-    # Helper: extract first VAD segment and write to tmp_path, return path
-    async def extract_first_segment_to_file(src_path: Path, out_path: Path) -> str:
+    async def extract_first_segment_to_array(src_path: Path):
+        """Return the first VAD-detected float32 numpy segment (sr=16k)."""
         async for seg in vad.detect_from_file(str(src_path)):
-            # seg is float32 numpy array at TARGET_SR
             if seg.size == 0:
                 continue
-            # write float32 array as PCM_16 WAV
-            sf.write(str(out_path), seg, 16000, subtype='PCM_16')
-            return str(out_path)
-        # fallback: copy full file if VAD found nothing
-        y, sr = librosa.load(str(src_path), sr=16000, mono=True)
-        sf.write(str(out_path), y, 16000, subtype='PCM_16')
-        return str(out_path)
+            return seg  # already float32 at 16k
+        # fallback: return whole file
+        y, _ = librosa.load(str(src_path), sr=16000, mono=True)
+        return y.astype('float32')
 
-    # Create VoiceIdentifier (its model will be DummyModel because of monkeypatch)
-    db_path = tmp_path / 'abby_speakers.db'
+    # Create single VoiceIdentifier / DB for this test
+    db_path = tmp_path / 'voices.db'
     vi = VoiceIdentifier(str(db_path))
 
-    # Extract segments and write temp files
-    seg1 = tmp_path / 'abby_seg1.wav'
-    seg2 = tmp_path / 'abby_seg2.wav'
-    seg3 = tmp_path / 'abby_seg3.wav'
+    # Extract and normalize segments
+    abby_seg1 = await extract_first_segment_to_array(abby_files[0])
+    abby_seg1 = normalize_volume(abby_seg1, audio_norm_target_dBFS, increase_only=True)
 
-    path1 = await extract_first_segment_to_file(file1, seg1)
-    path2 = await extract_first_segment_to_file(file2, seg2)
-    path3 = await extract_first_segment_to_file(file3, seg3)
+    riley_seg1 = await extract_first_segment_to_array(riley_files[0])
+    riley_seg1 = normalize_volume(riley_seg1, audio_norm_target_dBFS, increase_only=True)
 
-    # Seed DB with first recording embedding
-    signal1, sr = librosa.load(path1, sr=16000, mono=True)
-    emb_first = vi.model.embed_utterance(signal1)
-    vi.db.add_speaker('Abby', emb_first)
+    # Seed DB with Abby and Riley (first recordings)
+    emb_abby = vi.model.embed_utterance(abby_seg1)
+    vi.db.add_speaker('Abby', emb_abby)
 
-    # Now ensure the other two files match 'Abby'
-    signal2, sr = librosa.load(path2, sr=16000, mono=True)
-    found2, score2 = vi.identify_speaker(signal2)
+    emb_riley = vi.model.embed_utterance(riley_seg1)
+    vi.db.add_speaker('Riley', emb_riley)
 
-    signal3, sr = librosa.load(path3, sr=16000, mono=True)
-    found3, score3 = vi.identify_speaker(signal3)
+    # Check Abby remaining files match Abby
+    for f in abby_files[1:]:
+        seg = await extract_first_segment_to_array(f)
+        seg = normalize_volume(seg, audio_norm_target_dBFS, increase_only=True)
+        found, score = vi.identify_speaker(seg)
+        assert found == 'Abby', f'Expected {f} to match Abby, got {found} (score={score:.3f})'
 
-    print(score2, score3)
-
-    assert found2 == 'Abby', f'Expected {file2} to match Abby, got {found2}'
-    assert found3 == 'Abby', f'Expected {file3} to match Abby, got {found3}'
+    # Check Riley remaining files match Riley
+    for f in riley_files[1:]:
+        seg = await extract_first_segment_to_array(f)
+        seg = normalize_volume(seg, audio_norm_target_dBFS, increase_only=True)
+        found, score = vi.identify_speaker(seg)
+        assert found == 'Riley', f'Expected {f} to match Riley, got {found} (score={score:.3f})'

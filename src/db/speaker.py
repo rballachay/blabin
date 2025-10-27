@@ -7,7 +7,8 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from resemblyzer import VoiceEncoder
+from resemblyzer import VoiceEncoder, normalize_volume
+from resemblyzer.hparams import audio_norm_target_dBFS
 
 
 @dataclass
@@ -21,9 +22,44 @@ class Speaker:
 
 
 class VoiceIdentifier:
-    def __init__(self, db_path: str = 'data/speakers.db'):
+    def __init__(self, db_path: str = 'data/speakers.db', confidence: float = 0.5):
         self.db = SpeakerDB(db_path)
         self.model = VoiceEncoder()
+        self.confidence = confidence
+
+    async def confirm_and_update(
+        self,
+        name: str,
+        audio: np.ndarray,
+        weight: float = 1.0,
+    ) -> bool:
+        """
+        Confirm identity by audio segment and update the stored embedding for `name`.
+        If the speaker does not exist, create a new record.
+        Returns True if update or creation succeeded, False otherwise.
+
+        - audio: float32 numpy array at 16kHz in [-1,1] (will be normalized)
+        - weight: numeric weight for incremental update
+        """
+        try:
+            # normalize audio for embedding extraction
+            audio = normalize_volume(audio, audio_norm_target_dBFS, increase_only=True)
+            emb = self.model.embed_utterance(audio)  # embedding as numpy array
+
+            # look up speaker id
+            with self.db._get_db() as conn:
+                row = conn.execute('SELECT id FROM speakers WHERE name = ?', (name,)).fetchone()
+
+            if not row:
+                # Speaker does not exist, create new record
+                self.db.add_speaker(name, emb)
+                return True
+
+            speaker_id = row['id']
+            self.db.update_embedding_incremental(speaker_id, emb, weight=weight)
+            return True
+        except Exception:
+            return False
 
     def identify_speaker(self, audio: np.ndarray) -> tuple[str, float]:
         """
@@ -33,11 +69,11 @@ class VoiceIdentifier:
             audio: numpy array of audio samples, expected to be float32 in [-1, 1] range
                   at 16kHz sample rate
         """
-
+        audio = normalize_volume(audio, audio_norm_target_dBFS, increase_only=True)
         new_emb = self.model.embed_utterance(audio)
 
         best_match, score = self.db.compare_embeddings(new_emb)
-        if best_match and score > 0.6:
+        if best_match and score > self.confidence:
             return best_match, score
         else:
             return 'unknown', score
@@ -69,7 +105,8 @@ class SpeakerDB:
                     first_seen TIMESTAMP NOT NULL,
                     last_seen TIMESTAMP NOT NULL,
                     voice_signature BLOB NOT NULL,
-                    language_level TEXT DEFAULT 'beginner'
+                    language_level TEXT DEFAULT 'beginner',
+                    sample_count INTEGER DEFAULT 1
                 )
                 """
             )
@@ -97,7 +134,12 @@ class SpeakerDB:
         now = datetime.now()
 
         if isinstance(voice_signature, np.ndarray):
-            serialized = self._serialize_embedding(voice_signature)
+            # ensure normalized
+            vec = np.asarray(voice_signature, dtype=np.float32).ravel()
+            norm = np.linalg.norm(vec)
+            if norm > 0:
+                vec = vec / norm
+            serialized = self._serialize_embedding(vec)
         elif isinstance(voice_signature, bytes):
             serialized = voice_signature
         else:
@@ -106,13 +148,57 @@ class SpeakerDB:
         with self._get_db() as conn:
             cursor = conn.execute(
                 """
-                INSERT INTO speakers (name, first_seen, last_seen, voice_signature, language_level)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO speakers (name, first_seen, last_seen, voice_signature, language_level, sample_count)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (name, now, now, sqlite3.Binary(serialized), 'beginner'),
+                (name, now, now, sqlite3.Binary(serialized), 'beginner', 1),
             )
             conn.commit()
             return cursor.lastrowid
+
+    def _get_speaker_row(self, speaker_id: int):
+        with self._get_db() as conn:
+            return conn.execute(
+                'SELECT id, voice_signature, sample_count FROM speakers WHERE id = ?', (speaker_id,)
+            ).fetchone()
+
+    def update_embedding_incremental(
+        self, speaker_id: int, new_emb: np.ndarray, weight: float = 1.0
+    ) -> None:
+        """
+        Update stored embedding by computing the weighted incremental mean:
+          mean_new = (mean_old * count + new_emb * weight) / (count + weight)
+        Increments sample_count by weight (can be fractional).
+        Embeddings are L2-normalized after update.
+        """
+        row = self._get_speaker_row(speaker_id)
+        if not row:
+            raise ValueError('speaker_id not found')
+
+        old_blob = row['voice_signature']
+        old_count = float(row['sample_count'] or 1.0)
+
+        old_emb = self._deserialize_embedding(old_blob)
+        old_vec = np.asarray(old_emb, dtype=np.float32).ravel()
+        new_vec = np.asarray(new_emb, dtype=np.float32).ravel()
+
+        # compute weighted mean
+        total = old_count + float(weight)
+        mean = (old_vec * old_count + new_vec * float(weight)) / total
+
+        # normalize
+        n = np.linalg.norm(mean)
+        if n > 0:
+            mean = mean / n
+
+        serialized = self._serialize_embedding(mean)
+
+        with self._get_db() as conn:
+            conn.execute(
+                'UPDATE speakers SET voice_signature = ?, sample_count = ?, last_seen = ? WHERE id = ?',
+                (sqlite3.Binary(serialized), total, datetime.now(), speaker_id),
+            )
+            conn.commit()
 
     def get_speaker_by_voice(self, voice_signature: str) -> Speaker | None:
         """Try to find a speaker by an exact voice_signature match (string key)."""
@@ -156,6 +242,18 @@ class SpeakerDB:
                 (level, speaker_id),
             )
             conn.commit()
+
+    def list_names(self) -> list[str]:
+        """Return a list of all speaker names in the DB."""
+        with self._get_db() as conn:
+            rows = conn.execute('SELECT name FROM speakers').fetchall()
+            return [r['name'] for r in rows]
+
+    def name_exists(self, name: str) -> bool:
+        """Return True if a speaker with `name` exists (case-sensitive)."""
+        with self._get_db() as conn:
+            row = conn.execute('SELECT 1 FROM speakers WHERE name = ? LIMIT 1', (name,)).fetchone()
+            return row is not None
 
     def _fetch_all_embeddings(self) -> list[tuple[int, str, bytes]]:
         """Return list of tuples (id, name, embedding_blob)."""

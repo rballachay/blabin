@@ -44,7 +44,7 @@ class AsyncLLMClient:
         )
         return bytes(response.candidates[0].content.parts[0].inline_data.data)
 
-    async def identify_speaker(self, audio_bytes: bytes) -> tuple[bool, None | str]:
+    async def get_speaker_name(self, audio_bytes: bytes) -> str:
         """
         Use Gemini to identify if this is a known speaker.
         Returns (is_known, speaker_name or None).
@@ -56,7 +56,7 @@ class AsyncLLMClient:
                     {'inline_data': {'mime_type': 'audio/wav', 'data': audio_bytes}},
                     {
                         'text': (
-                            "Please analyze this voice. If you've heard this speaker before, "
+                            'Please analyze this voice, and determine if they say their name. If so,'
                             "tell me their name. If not, just say 'unknown'. "
                             "Format: either 'unknown' or the name only."
                         )
@@ -66,13 +66,65 @@ class AsyncLLMClient:
         ]
 
         response = await self.client.aio.models.generate_content(
-            model='gemini-2.0-flash', contents=prompt
+            model='gemini-2.0-flash',
+            contents=prompt,
         )
         text = response.text.strip().lower()
 
-        if text == 'unknown':
-            return False, None
-        return True, text
+        return text
+
+    async def is_confirmation(self, text: str) -> bool:
+        """
+        Check if the given text is a confirmation (yes) response.
+        """
+        prompt = [
+            {
+                'role': 'user',
+                'parts': [
+                    {'text': text},
+                    {
+                        'text': (
+                            'You are a conversation assistant. '
+                            'Analyze the text and determine if the speaker is confirming yes or no.'
+                            "Respond with exactly 'NONE' if it's not a confirmation, "
+                            'or else respond with exactly "YES" or "NO".'
+                        ),
+                    },
+                ],
+            },
+        ]
+        response = await self.client.aio.models.generate_content(
+            model='gemini-2.0-flash', contents=prompt
+        )
+
+        text = response.text.strip().upper()
+
+        if text == 'YES':
+            return True
+        return False
+
+    async def transcribe_bytes(self, audio_bytes: bytes) -> str:
+        # Send to LLM with audio transcription prompt
+        prompt = [
+            {
+                'role': 'user',
+                'parts': [
+                    {
+                        'inline_data': {
+                            'mime_type': 'audio/wav',
+                            'data': audio_bytes,
+                        }
+                    },
+                    {
+                        'text': 'What is being said in this audio? Only return the transcription, no other text.'
+                    },
+                ],
+            }
+        ]
+
+        # Collect response
+        transcription = await self.send_request(prompt)
+        return transcription.strip()
 
     async def close(self) -> None:
         """
