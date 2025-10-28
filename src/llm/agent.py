@@ -7,6 +7,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, START, StateGraph
 
 from src.db.speaker import VoiceIdentifier
+from src.llm.client import AsyncLLMClient
 from src.llm.prompt import PromptManager
 
 
@@ -21,7 +22,8 @@ class _ConvState(TypedDict, total=False):
 
     # Per-turn input
     user_text: str
-    audio_segment: np.ndarray | None  # audio segment at 16 kHz float32
+    audio_bytes: bytes  # audio segment at 16 kHz float32
+    audio_array: np.ndarray
 
     # Per-turn output
     response: str
@@ -31,8 +33,9 @@ class ConversationAgent:
     def __init__(
         self,
         api_key: str,
+        llm_client: AsyncLLMClient,
+        voice_identifier: VoiceIdentifier,
         prompt_name: str = 'teacher_v1',
-        voice_identifier: VoiceIdentifier | None = None,
     ):
         self.current_speaker: None | str = None
         self.conversation_started: bool = False
@@ -47,7 +50,7 @@ class ConversationAgent:
 
         # LLM (Gemini)
         self.llm = ChatGoogleGenerativeAI(
-            model='gemini-2.5-flash',
+            model='gemini-2.0-flash',
             google_api_key=api_key,
             temperature=0.2,
             convert_system_message_to_human=True,
@@ -56,58 +59,13 @@ class ConversationAgent:
         # Optional voice identifier for voice-based recognition
         self.voice_identifier = voice_identifier
 
+        self.llm_client = llm_client
+
         # Simple in-class memory for chat history
         self._history: list[dict[str, str]] = []
 
         # Build a LangGraph for the conversation turn
         self._graph = self._build_graph()
-
-    async def _classify_confirmation(self, text: str) -> str:
-        """
-        Classify user text as YES / NO / NONE.
-        """
-        txt = (text or '').strip()
-        if not txt:
-            return 'NONE'
-        # quick heuristic first
-        low = txt.lower()
-        if any(w in low for w in ['oui', "c'est bien", 'exact', 'tout à fait', "oui c'est moi"]):
-            return 'YES'
-        if any(w in low for w in ['non', 'pas moi', "ce n'est pas moi", 'pas du tout']):
-            return 'NO'
-
-        prompt = [
-            {
-                'role': 'system',
-                'content': (
-                    'You are a French assistant. Classify the user reply as YES, NO, or NONE. '
-                    'Respond with exactly one token: YES or NO or NONE.'
-                ),
-            },
-            {'role': 'user', 'content': txt},
-        ]
-        try:
-            res = await self.llm.ainvoke(prompt)
-            out = str(getattr(res, 'content', str(res))).strip().upper()
-            if out in ('YES', 'NO', 'NONE'):
-                return out
-        except Exception:
-            pass
-        return 'NONE'
-
-    def _extract_name_from_text(self, text: str) -> str | None:
-        """
-        Minimal French name extraction: "je m'appelle X", "moi c'est X", or a lone token.
-        """
-        if not text:
-            return None
-        m = re.search(r"(?:je m'appelle|moi c['’]est)\s+([A-Za-zÀ-ÿ\-]{2,})", text, flags=re.I)
-        if m:
-            return m.group(1).strip()
-        tokens = re.findall(r'[A-Za-zÀ-ÿ\-]{2,}', text)
-        if 1 <= len(tokens) <= 3:
-            return tokens[-1].capitalize()
-        return None
 
     def _build_graph(self):
         g = StateGraph(_ConvState)
@@ -117,18 +75,16 @@ class ConversationAgent:
             If an audio segment is provided and no current speaker yet, try voice identification.
             If a candidate is found, ask for confirmation rather than setting the speaker directly.
             """
+
             if state.get('current_speaker'):
                 return {}
 
-            seg = state.get('audio_segment')
+            seg = state.get('audio_array')
             if self.voice_identifier is None:
                 return {}
 
             if isinstance(seg, np.ndarray) and seg.size > 0:
-                try:
-                    name, _score = self.voice_identifier.identify_speaker(seg)
-                except Exception:
-                    name = 'unknown'
+                name, _score = self.voice_identifier.identify_speaker(seg)
 
                 if name and name != 'unknown':
                     # Ask for confirmation of the proposed name
@@ -157,8 +113,12 @@ class ConversationAgent:
             proposed = state.get('proposed_name')
 
             # If user directly provides a different name, accept it
-            provided = self._extract_name_from_text(user_text)
-            if provided:
+            seg = state.get('audio_bytes')
+            if (not proposed) and (seg is not None):
+                provided = await self.llm_client.get_speaker_name(seg)
+            else:
+                provided = 'unknown'
+            if provided != 'unknown':
                 greet = f'Ravi de vous rencontrer, {provided} !'
                 return {
                     'current_speaker': provided,
@@ -169,8 +129,9 @@ class ConversationAgent:
                 }
 
             # Otherwise classify as yes/no/none
-            decision = await self._classify_confirmation(user_text)
-            if decision == 'YES' and proposed:
+            decision = await self.llm_client.is_confirmation(user_text)
+
+            if decision and proposed:
                 # Returning user confirmed
                 greet = f'Ravi de vous revoir, {proposed} !'
                 return {
@@ -218,7 +179,11 @@ class ConversationAgent:
                     'conversation_started': True,
                 }
 
-            extracted = self._extract_name_from_text(user_text) or 'NO_NAME'
+            seg = state.get('audio_bytes')
+            if seg is not None:
+                extracted = await self.llm_client.get_speaker_name(seg)
+            else:
+                extracted = 'NO_NAME'
             if extracted != 'NO_NAME':
                 greet = f'Enchanté(e), {extracted} !'
                 return {
@@ -297,7 +262,7 @@ class ConversationAgent:
     def set_speaker(self, speaker_name: None | str) -> None:
         self.current_speaker = speaker_name
 
-    async def process_message(self, text: str, audio_segment: np.ndarray | None = None) -> str:
+    async def process_message(self, text: str, audio_bytes: bytes, audio_array: np.ndarray) -> str:
         # Prepare state for this turn (audio included)
         state: _ConvState = {
             'system_prompt': self.system_prompt,
@@ -305,7 +270,8 @@ class ConversationAgent:
             'conversation_started': self.conversation_started,
             'history': self._history,
             'user_text': text,
-            'audio_segment': audio_segment,
+            'audio_bytes': audio_bytes,
+            'audio_array': audio_array,
             # keep any pending confirmation across turns
             'awaiting_confirmation': False,
             'proposed_name': None,

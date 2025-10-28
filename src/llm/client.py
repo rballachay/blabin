@@ -18,7 +18,7 @@ class AsyncLLMClient:
         Returns text chunks from the server.
         """
         response = await self.client.aio.models.generate_content(
-            model='gemini-2.5-flash', contents=prompt
+            model='gemini-2.0-flash', contents=prompt
         )
         return response.text
 
@@ -29,7 +29,7 @@ class AsyncLLMClient:
         """
         response = await asyncio.to_thread(
             self.client.models.generate_content,
-            model='gemini-2.5-flash-preview-tts',
+            model='gemini-2.0-flash-preview-tts',
             contents=[text],
             config=types.GenerateContentConfig(
                 response_modalities=['AUDIO'],
@@ -66,7 +66,7 @@ class AsyncLLMClient:
         ]
 
         response = await self.client.aio.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-2.0-flash',
             contents=prompt,
         )
         text = response.text.strip().lower()
@@ -94,7 +94,7 @@ class AsyncLLMClient:
             },
         ]
         response = await self.client.aio.models.generate_content(
-            model='gemini-2.5-flash', contents=prompt
+            model='gemini-2.0-flash', contents=prompt
         )
 
         text = response.text.strip().upper()

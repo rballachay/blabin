@@ -153,7 +153,7 @@ class AudioProcessor:
 
                     # Let the ConversationAgent (LangGraph) handle voice ID first, then text fallback
                     response = await self.agent.process_message(
-                        transcription, audio_segment=segment
+                        transcription, audio_bytes=audio_bytes, audio_array=segment
                     )
                     if response:
                         await self.speak(response)
@@ -161,23 +161,16 @@ class AudioProcessor:
                     # If the agent captured a speaker name this turn, persist/update embedding once
                     if self.agent.current_speaker and not self._speaker_persisted:
                         name = self.agent.current_speaker
-                        try:
-                            existed = self.voice_identifier.db.name_exists(name)
-                        except Exception:
-                            existed = False
-                        try:
-                            # confirm_and_update creates if missing, updates incrementally if exists
-                            ok = await self.voice_identifier.confirm_and_update(name, last_segment)
-                            if ok:
-                                self._speaker_persisted = True
-                                if not existed:
-                                    print(f"[info] Created speaker '{name}' in DB.")
-                                else:
-                                    print(
-                                        f"[info] Updated embedding for returning speaker '{name}'."
-                                    )
-                        except Exception as e:
-                            print(f"[warn] Failed to persist speaker '{name}': {e}")
+                        existed = self.voice_identifier.db.name_exists(name)
+
+                        # confirm_and_update creates if missing, updates incrementally if exists
+                        ok = await self.voice_identifier.confirm_and_update(name, last_segment)
+                        if ok:
+                            self._speaker_persisted = True
+                            if not existed:
+                                print(f"[info] Created speaker '{name}' in DB.")
+                            else:
+                                print(f"[info] Updated embedding for returning speaker '{name}'.")
 
                     time.sleep(1)  # small delay to avoid API throttling
 
@@ -219,7 +212,9 @@ async def main() -> None:
     gemini_key = os.getenv('GEMINI_API_KEY', '')
     llm_client = AsyncLLMClient(api_key=gemini_key)
     voice_identifier = VoiceIdentifier(db_path='data/speakers.db', confidence=0.5)
-    agent = ConversationAgent(api_key=gemini_key, voice_identifier=voice_identifier)
+    agent = ConversationAgent(
+        api_key=gemini_key, voice_identifier=voice_identifier, llm_client=llm_client
+    )
 
     # Create and run processor with audio simulation from file
     processor = AudioProcessor(
