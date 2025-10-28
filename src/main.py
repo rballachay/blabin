@@ -1,6 +1,7 @@
 import asyncio
 import io
 import os
+import random
 import time
 import wave
 from collections.abc import AsyncIterator
@@ -9,6 +10,8 @@ import numpy as np
 import pyaudio
 import torch
 from dotenv import load_dotenv
+from resemblyzer import normalize_volume
+from resemblyzer.hparams import audio_norm_target_dBFS
 
 from src.db.speaker import VoiceIdentifier
 from src.llm.agent import ConversationAgent
@@ -143,11 +146,15 @@ class AudioProcessor:
                     if segment is None:
                         break
 
+                    segment = normalize_volume(segment, audio_norm_target_dBFS, increase_only=True)
+
                     # Remember last voiced segment for potential speaker embedding update
                     last_segment = segment.copy()
 
                     # Transcribe the segment
                     audio_bytes = self._segment_to_wav_bytes(segment)
+                    # dump_segment(segment, audio_bytes) # uncomment for testing
+
                     transcription = await self.llm_client.transcribe_bytes(audio_bytes)
                     print(f'User: {transcription}')
 
@@ -172,7 +179,7 @@ class AudioProcessor:
                             else:
                                 print(f"[info] Updated embedding for returning speaker '{name}'.")
 
-                    time.sleep(1)  # small delay to avoid API throttling
+                    time.sleep(5)  # small delay to avoid API throttling
 
             else:
                 # TODO: implement microphone branch similarly by feeding segments through VAD and the agent
@@ -223,9 +230,27 @@ async def main() -> None:
         agent,
         voice_identifier,
         simulate_audio=True,
-        audio_file='tests/data/conversation-full.wav',
+        audio_file='tests/data/conversation-difficult.wav',
     )
     await processor.run()
+
+
+def dump_segment(
+    segment: np.ndarray, wav_bytes: bytes, sr: int = 16000, prefix: str = 'seg'
+) -> str:
+    """
+    Write the current audio to files for debugging:
+    - WAV bytes exactly as sent to transcribe (so you can play/inspect)
+    - NPY of the float32 segment
+    Returns the WAV file path.
+    """
+    idx = random.randint(0, 100000)
+    wav_path = f'{prefix}_{idx}_{sr}Hz_{len(segment)}smp.wav'
+
+    # Save the exact bytes we pass to transcribe
+    with open(wav_path, 'wb') as f:
+        f.write(wav_bytes)
+    return wav_path
 
 
 if __name__ == '__main__':

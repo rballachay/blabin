@@ -50,7 +50,7 @@ class ConversationAgent:
 
         # LLM (Gemini)
         self.llm = ChatGoogleGenerativeAI(
-            model='gemini-2.0-flash',
+            model='gemini-2.5-flash',
             google_api_key=api_key,
             temperature=0.2,
             convert_system_message_to_human=True,
@@ -85,7 +85,6 @@ class ConversationAgent:
 
             if isinstance(seg, np.ndarray) and seg.size > 0:
                 name, _score = self.voice_identifier.identify_speaker(seg)
-
                 if name and name != 'unknown':
                     # Ask for confirmation of the proposed name
                     ask = f'Est-ce que vous êtes bien {name} ?'
@@ -112,10 +111,8 @@ class ConversationAgent:
             user_text = state.get('user_text', '').strip()
             proposed = state.get('proposed_name')
 
-            # If user directly provides a different name, accept it
-            seg = state.get('audio_bytes')
-            if (not proposed) and (seg is not None):
-                provided = await self.llm_client.get_speaker_name(seg)
+            if (not proposed) and (user_text is not None):
+                provided = await self.llm_client.get_speaker_name(user_text)
             else:
                 provided = 'unknown'
             if provided != 'unknown':
@@ -141,7 +138,7 @@ class ConversationAgent:
                     'response': greet,
                     'conversation_started': True,
                 }
-            if decision == 'NO':
+            if not decision:
                 # Ask for their name explicitly
                 return {
                     'proposed_name': None,
@@ -181,7 +178,7 @@ class ConversationAgent:
 
             seg = state.get('audio_bytes')
             if seg is not None:
-                extracted = await self.llm_client.get_speaker_name(seg)
+                extracted = await self.llm_client.get_speaker_name(user_text)
             else:
                 extracted = 'NO_NAME'
             if extracted != 'NO_NAME':

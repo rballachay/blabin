@@ -18,7 +18,7 @@ class AsyncLLMClient:
         Returns text chunks from the server.
         """
         response = await self.client.aio.models.generate_content(
-            model='gemini-2.0-flash', contents=prompt
+            model='gemini-2.5-flash', contents=prompt
         )
         return response.text
 
@@ -29,7 +29,7 @@ class AsyncLLMClient:
         """
         response = await asyncio.to_thread(
             self.client.models.generate_content,
-            model='gemini-2.0-flash-preview-tts',
+            model='gemini-2.5-flash-preview-tts',
             contents=[text],
             config=types.GenerateContentConfig(
                 response_modalities=['AUDIO'],
@@ -44,7 +44,7 @@ class AsyncLLMClient:
         )
         return bytes(response.candidates[0].content.parts[0].inline_data.data)
 
-    async def get_speaker_name(self, audio_bytes: bytes) -> str:
+    async def get_speaker_name(self, text: str) -> str:
         """
         Use Gemini to identify if this is a known speaker.
         Returns (is_known, speaker_name or None).
@@ -53,10 +53,10 @@ class AsyncLLMClient:
             {
                 'role': 'user',
                 'parts': [
-                    {'inline_data': {'mime_type': 'audio/wav', 'data': audio_bytes}},
+                    {'text': text},
                     {
                         'text': (
-                            'Please analyze this voice, and determine if they say their name. If so,'
+                            'Please analyze this text, and determine if they say their name. If so,'
                             "tell me their name. If not, just say 'unknown'. "
                             "Format: either 'unknown' or the name only."
                         )
@@ -66,7 +66,7 @@ class AsyncLLMClient:
         ]
 
         response = await self.client.aio.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-2.5-flash',
             contents=prompt,
         )
         text = response.text.strip().lower()
@@ -94,7 +94,7 @@ class AsyncLLMClient:
             },
         ]
         response = await self.client.aio.models.generate_content(
-            model='gemini-2.0-flash', contents=prompt
+            model='gemini-2.5-flash', contents=prompt
         )
 
         text = response.text.strip().upper()
@@ -105,25 +105,16 @@ class AsyncLLMClient:
 
     async def transcribe_bytes(self, audio_bytes: bytes) -> str:
         # Send to LLM with audio transcription prompt
-        prompt = [
-            {
-                'role': 'user',
-                'parts': [
-                    {
-                        'inline_data': {
-                            'mime_type': 'audio/wav',
-                            'data': audio_bytes,
-                        }
-                    },
-                    {
-                        'text': 'What is being said in this audio? This will be in french. Only return the transcription, no other text.'
-                    },
-                ],
-            }
+        contents = [
+            'Transcribe this audio clip, it will be in french. Do not any additonal comments.',
+            types.Part.from_bytes(
+                data=audio_bytes,
+                mime_type='audio/wav',
+            ),
         ]
 
         # Collect response
-        transcription = await self.send_request(prompt)
+        transcription = await self.send_request(contents)
         return transcription.strip()
 
     async def close(self) -> None:

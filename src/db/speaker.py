@@ -73,6 +73,7 @@ class VoiceIdentifier:
         new_emb = self.model.embed_utterance(audio)
 
         best_match, score = self.db.compare_embeddings(new_emb)
+        print(best_match, score)
         if best_match and score > self.confidence:
             return best_match, score
         else:
