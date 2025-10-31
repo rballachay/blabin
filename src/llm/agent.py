@@ -11,7 +11,7 @@ from src.llm.client import AsyncLLMClient
 from src.llm.prompt import PromptManager
 
 
-class _ConvState(TypedDict, total=False):
+class _ConvState(TypedDict, total=True):
     # Persistent
     system_prompt: str
     current_speaker: str | None
@@ -19,14 +19,15 @@ class _ConvState(TypedDict, total=False):
     history: list[dict[str, str]]  # [{'role': 'user'|'assistant', 'content': str}, ...]
     proposed_name: str | None  # name proposed by voice ID
     awaiting_confirmation: bool  # awaiting yes/no on proposed_name
+    name_just_discovered: bool  # whether we just learned a name this turn
 
     # Per-turn input
     user_text: str
-    audio_bytes: bytes  # audio segment at 16 kHz float32
-    audio_array: np.ndarray
+    audio_bytes: bytes | None  # optional audio
+    audio_array: np.ndarray | None  # optional audio
 
     # Per-turn output
-    response: str
+    response: str | None
 
 
 class ConversationAgent:
@@ -37,16 +38,21 @@ class ConversationAgent:
         voice_identifier: VoiceIdentifier,
         prompt_name: str = 'teacher_v1',
     ):
-        self.current_speaker: None | str = None
+        self.current_speaker: str | None = None
         self.conversation_started: bool = False
+        self.proposed_name: str | None = None
+        self.awaiting_confirmation: bool = False
         self.system_prompt = (
             'You are a helpful language learning assistant, please respond in the language in '
             'which you are addressed. Correct any grammatical errors made by the speaker.'
         )
-        pm = PromptManager()
-        doc = pm.get_prompt(prompt_name, local_only=True)
-        if doc and isinstance(doc, dict):
-            self.system_prompt = str(doc.get('system', doc.get('prompt', self.system_prompt)))
+        try:
+            pm = PromptManager()
+            doc = pm.get_prompt(prompt_name, local_only=True)
+            if doc and isinstance(doc, dict):
+                self.system_prompt = str(doc.get('system', doc.get('prompt', self.system_prompt)))
+        except Exception:
+            pass
 
         # LLM (Gemini)
         self.llm = ChatGoogleGenerativeAI(
@@ -56,9 +62,7 @@ class ConversationAgent:
             convert_system_message_to_human=True,
         )
 
-        # Optional voice identifier for voice-based recognition
         self.voice_identifier = voice_identifier
-
         self.llm_client = llm_client
 
         # Simple in-class memory for chat history
@@ -66,6 +70,17 @@ class ConversationAgent:
 
         # Build a LangGraph for the conversation turn
         self._graph = self._build_graph()
+
+    def _extract_name_from_text(self, text: str) -> str | None:
+        if not text:
+            return None
+        m = re.search(r"(?:je m'appelle|moi c['’]est)\s+([A-Za-zÀ-ÿ\-]{2,})", text, flags=re.I)
+        if m:
+            return m.group(1).strip()
+        tokens = re.findall(r'[A-Za-zÀ-ÿ\-]{2,}', text)
+        if 1 <= len(tokens) <= 3:
+            return tokens[-1].capitalize()
+        return None
 
     def _build_graph(self):
         g = StateGraph(_ConvState)
@@ -75,8 +90,16 @@ class ConversationAgent:
             If an audio segment is provided and no current speaker yet, try voice identification.
             If a candidate is found, ask for confirmation rather than setting the speaker directly.
             """
+            # awaiting confirmation for the voice, don't try again
+            if self.awaiting_confirmation:
+                return {}
 
             if state.get('current_speaker'):
+                return {}
+
+            # if the name was proposed in a prior turn, we don't try to identify
+            # again until we have determined that this is NOT their name
+            if state.get('proposed_name'):
                 return {}
 
             seg = state.get('audio_array')
@@ -84,18 +107,21 @@ class ConversationAgent:
                 return {}
 
             if isinstance(seg, np.ndarray) and seg.size > 0:
-                name, _score = self.voice_identifier.identify_speaker(seg)
+                try:
+                    name, _score = self.voice_identifier.identify_speaker(seg)
+                except Exception:
+                    name = 'unknown'
+
                 if name and name != 'unknown':
-                    # Ask for confirmation of the proposed name
-                    ask = f'Est-ce que vous êtes bien {name} ?'
+                    ask = f'Je connais votre voix! Est-ce que vous êtes bien {name} ?'
                     return {
                         'proposed_name': name,
                         'awaiting_confirmation': True,
                         'response': ask,
                         'conversation_started': True,
+                        'name_just_discovered': True,
                     }
 
-            # No audio or unknown => do nothing here; fall through to text handler
             return {}
 
         async def confirm_identity(state: _ConvState) -> dict[str, Any]:
@@ -108,14 +134,15 @@ class ConversationAgent:
             if not state.get('awaiting_confirmation'):
                 return {}
 
-            user_text = state.get('user_text', '').strip()
+            if state.get('name_just_discovered'):
+                return {}
+
+            user_text = (state.get('user_text') or '').strip()
             proposed = state.get('proposed_name')
 
-            if (not proposed) and (user_text is not None):
-                provided = await self.llm_client.get_speaker_name(user_text)
-            else:
-                provided = 'unknown'
-            if provided != 'unknown':
+            # If user directly provides a different name, accept it
+            provided = self._extract_name_from_text(user_text)
+            if provided:
                 greet = f'Ravi de vous rencontrer, {provided} !'
                 return {
                     'current_speaker': provided,
@@ -125,11 +152,13 @@ class ConversationAgent:
                     'conversation_started': True,
                 }
 
-            # Otherwise classify as yes/no/none
-            decision = await self.llm_client.is_confirmation(user_text)
+            # Otherwise classify as yes/no via LLM client
+            try:
+                decision = await self.llm_client.is_confirmation(user_text)
+            except Exception:
+                decision = False
 
             if decision and proposed:
-                # Returning user confirmed
                 greet = f'Ravi de vous revoir, {proposed} !'
                 return {
                     'current_speaker': proposed,
@@ -138,8 +167,7 @@ class ConversationAgent:
                     'response': greet,
                     'conversation_started': True,
                 }
-            if not decision:
-                # Ask for their name explicitly
+            if decision is False:
                 return {
                     'proposed_name': None,
                     'awaiting_confirmation': False,
@@ -147,7 +175,7 @@ class ConversationAgent:
                     'conversation_started': True,
                 }
 
-            # Not sure yet; ask again without overwriting any prior response
+            # Not sure yet; gently ask again if we haven't replied this turn
             if not state.get('response'):
                 return {
                     'response': "Pouvez-vous confirmer, s'il vous plaît ? Répondez par oui ou non.",
@@ -162,26 +190,21 @@ class ConversationAgent:
             """
             if state.get('current_speaker'):
                 return {}
-            # If we already produced a response this turn (e.g. confirmation prompt), keep it
             if state.get('response'):
                 return {}
-            # If still awaiting confirmation, don't ask for name again here
             if state.get('awaiting_confirmation'):
                 return {}
 
-            user_text = state.get('user_text', '').strip()
+            user_text = (state.get('user_text') or '').strip()
             if not user_text:
                 return {
                     'response': 'Je ne crois pas vous connaître. Comment vous appelez-vous ?',
                     'conversation_started': True,
                 }
 
-            seg = state.get('audio_bytes')
-            if seg is not None:
-                extracted = await self.llm_client.get_speaker_name(user_text)
-            else:
-                extracted = 'NO_NAME'
-            if extracted != 'NO_NAME':
+            extracted = self._extract_name_from_text(user_text)
+
+            if extracted:
                 greet = f'Enchanté(e), {extracted} !'
                 return {
                     'current_speaker': extracted,
@@ -189,9 +212,15 @@ class ConversationAgent:
                     'conversation_started': True,
                 }
 
+            # respond to what they're saying, then ask their name
+            state['system_prompt'] += (
+                "At the end of your response, mention you don't know them, and need to ask their name"
+            )
+            state['current_speaker'] = 'unknown'  # temporary to allow response generation
+
+            response = await generate_response(state)
             return {
-                'response': "Je ne suis pas sûr d'avoir compris votre nom. "
-                "Pourriez-vous me le redire s'il vous plaît ?",
+                'response': response['response'],
                 'conversation_started': True,
             }
 
@@ -203,7 +232,7 @@ class ConversationAgent:
             if state.get('response'):
                 return {}
 
-            user_text = state.get('user_text', '').strip()
+            user_text = (state.get('user_text') or '').strip()
             if not user_text:
                 return {}
 
@@ -256,32 +285,35 @@ class ConversationAgent:
         else:
             return 'Bonsoir! Comment allez-vous ce soir?'
 
-    def set_speaker(self, speaker_name: None | str) -> None:
+    def set_speaker(self, speaker_name: str | None) -> None:
         self.current_speaker = speaker_name
 
-    async def process_message(self, text: str, audio_bytes: bytes, audio_array: np.ndarray) -> str:
-        # Prepare state for this turn (audio included)
+    async def process_message(
+        self,
+        text: str,
+        audio_bytes: bytes | None = None,
+        audio_array: np.ndarray | None = None,
+    ) -> str:
+        # Prepare state for this turn (audio may be None in text modes)
         state: _ConvState = {
             'system_prompt': self.system_prompt,
             'current_speaker': self.current_speaker,
             'conversation_started': self.conversation_started,
+            'name_just_discovered': False,
             'history': self._history,
             'user_text': text,
             'audio_bytes': audio_bytes,
             'audio_array': audio_array,
-            # keep any pending confirmation across turns
             'awaiting_confirmation': False,
             'proposed_name': None,
+            'response': None,
         }
 
         # Seed pending confirmation/proposed_name from last assistant turn if we asked it
-        # Pull from last history message if it contained a confirm question with a name.
-        # Lightweight approach: if last assistant asked "Est-ce que vous êtes bien X ?"
         if self._history:
-            last_assistant = self._history[-1] if self._history[-1]['role'] == 'assistant' else None
-            if last_assistant and 'êtes bien' in last_assistant['content']:
-                # Try to extract the proposed name from the question
-                m = re.search(r'êtes bien\s+([A-Za-zÀ-ÿ\-]{2,})', last_assistant['content'])
+            last = self._history[-1]
+            if last.get('role') == 'assistant' and 'êtes bien' in last.get('content', ''):
+                m = re.search(r'êtes bien\s+([A-Za-zÀ-ÿ\-]{2,})', last['content'])
                 if m:
                     state['proposed_name'] = m.group(1)
                     state['awaiting_confirmation'] = True
@@ -291,6 +323,8 @@ class ConversationAgent:
 
         # Persist updates
         self.current_speaker = result.get('current_speaker', self.current_speaker)
+        self.proposed_name = result.get('proposed_name', self.proposed_name)
+        self.awaiting_confirmation = result.get('awaiting_confirmation', self.awaiting_confirmation)
         self.conversation_started = bool(
             result.get('conversation_started', self.conversation_started)
         )
