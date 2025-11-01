@@ -1,6 +1,7 @@
 # ignore special files
 data/*.db
 mlruns/*
+data/*.csv
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

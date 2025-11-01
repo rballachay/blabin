@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import os
 import time
+from datetime import datetime, timezone
 from typing import cast
 
 import numpy as np
@@ -9,6 +10,7 @@ import pyaudio
 import torch
 from dotenv import load_dotenv
 
+from src.db.mistakes import MistakeStore, TurnRecord
 from src.db.speaker import VoiceIdentifier
 from src.handleio.input import AudioInputProcessor, InputProcessor, TextInputProcessor
 from src.handleio.output import AudioOutputProcessor, OutputProcessor, TextOutputProcessor
@@ -33,15 +35,20 @@ class ConversationRunner:
         voice_identifier: VoiceIdentifier,
         input_processor: InputProcessor,
         output_processor: OutputProcessor,
+        mistake_store: MistakeStore | None = None,
+        session_id: int | None = None,
     ):
         self.agent = agent
         self.voice_identifier = voice_identifier
         self.input_processor = input_processor
         self.output_processor = output_processor  # NEW
+        self.mistake_store = mistake_store  # NEW
+        self.session_id = session_id
 
         # for one-time speaker persist (audio mode)
         self._speaker_persisted = False
         self._last_segment: np.ndarray = np.array([], dtype=np.float32)
+        self._turn_index = 0
 
     async def run(self, llm_client: AsyncLLMClient) -> None:
         # greet once
@@ -56,6 +63,7 @@ class ConversationRunner:
                     self._last_segment = turn.audio_array.copy()
 
             print(f'User: {turn.text}')
+            self._turn_index += 1
 
             response = await self.agent.process_message(
                 turn.text,
@@ -65,6 +73,19 @@ class ConversationRunner:
             if response:
                 await self.output_processor.output(  # NEW
                     response, llm_client, speak_allowed=self.agent.should_speak_response(response)
+                )
+
+            if self.mistake_store and self.session_id:
+                ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                await self.mistake_store.record_turn(
+                    TurnRecord(
+                        session_id=self.session_id,
+                        turn_index=self._turn_index,
+                        user_text=turn.text,
+                        assistant_text=response or '',
+                        timestamp=ts,
+                    ),
+                    mistakes=self.agent.last_mistakes,
                 )
 
             # Persist/update embedding once when we get a confirmed speaker and we have audio
@@ -127,13 +148,20 @@ async def main() -> None:
         input_processor = cast(InputProcessor, TextInputProcessor(script_file=args.script))
 
     # Choose output processor (audio TTS vs stdout)
-    output_processor = AudioOutputProcessor() if SPEAK_OUTPUT else TextOutputProcessor()  # NEW
+    output_processor = AudioOutputProcessor() if SPEAK_OUTPUT else TextOutputProcessor()
+
+    # Mistake store + session
+    mistake_store = MistakeStore('data/mistakes.db')
+    session_name = args.script or ('stdin-chat' if args.chat else (audio_file or 'voice'))
+    session_id = await mistake_store.start_session(name=session_name)
 
     runner = ConversationRunner(
         agent=agent,
         voice_identifier=voice_identifier,
         input_processor=input_processor,
-        output_processor=output_processor,  # NEW
+        output_processor=output_processor,
+        mistake_store=mistake_store,
+        session_id=session_id,
     )
     await runner.run(llm_client)
 
