@@ -106,21 +106,22 @@ class ConversationAgent:
             if self.voice_identifier is None:
                 return {}
 
-            if isinstance(seg, np.ndarray) and seg.size > 0:
-                try:
-                    name, _score = self.voice_identifier.identify_speaker(seg)
-                except Exception:
-                    name = 'unknown'
+            if isinstance(seg, np.ndarray):
+                if seg.size > 0:
+                    try:
+                        name, _ = self.voice_identifier.identify_speaker(seg)
+                    except Exception:
+                        name = 'unknown'
 
-                if name and name != 'unknown':
-                    ask = f'Je connais votre voix! Est-ce que vous êtes bien {name} ?'
-                    return {
-                        'proposed_name': name,
-                        'awaiting_confirmation': True,
-                        'response': ask,
-                        'conversation_started': True,
-                        'name_just_discovered': True,
-                    }
+                    if name and name != 'unknown':
+                        ask = f'Je connais votre voix! Est-ce que vous êtes bien {name} ?'
+                        return {
+                            'proposed_name': name,
+                            'awaiting_confirmation': True,
+                            'response': ask,
+                            'conversation_started': True,
+                            'name_just_discovered': True,
+                        }
 
             return {}
 

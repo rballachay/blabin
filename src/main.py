@@ -49,7 +49,7 @@ class ConversationRunner:
         await self.output_processor.output(greeting, llm_client, speak_allowed=True)  # NEW
 
         # main loop over turns
-        async for turn in await self.input_processor.stream():
+        async for turn in self.input_processor.stream():
             # keep last segment if available for embedding update
             if isinstance(turn.audio_array, np.ndarray):
                 if turn.audio_array.size > 0:
@@ -114,7 +114,7 @@ async def main() -> None:
         model, _ = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad')
         vad = AsyncVAD(
             model,
-            threshold=0.5,
+            threshold=0.7,
             min_speech_duration_ms=250,
             min_silence_duration_ms=500,
             speech_pad_ms=30,

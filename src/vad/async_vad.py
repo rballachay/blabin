@@ -40,7 +40,7 @@ class AsyncVAD:
         *,
         target_sr: int = TARGET_SR,
         frame_size: int = NUM_SAMPLES,
-        threshold: float = 0.5,
+        threshold: float = 0.7,
         min_speech_duration_ms: int = 250,
         max_speech_duration_s: float = float('inf'),
         min_silence_duration_ms: int = 500,

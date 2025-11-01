@@ -26,7 +26,10 @@ class UserTurn:
 
 
 class InputProcessor(Protocol):
-    async def stream(self) -> AsyncIterator[UserTurn]: ...
+    # Not a coroutine: returns an async iterator you can "async for" over
+    def stream(self) -> AsyncIterator[UserTurn]: ...
+    # Optional: allow "async for turn in processor" directly
+    def __aiter__(self) -> AsyncIterator[UserTurn]: ...
 
 
 def _segment_to_wav_bytes(segment: np.ndarray, sr: int = TARGET_SR) -> bytes:
@@ -57,6 +60,7 @@ class AudioInputProcessor:
         while True:
             try:
                 segment = await self._aiter.__anext__()
+                print(segment.shape)
             except StopAsyncIteration:
                 break
 
@@ -64,6 +68,7 @@ class AudioInputProcessor:
             segment = normalize_volume(segment, audio_norm_target_dBFS, increase_only=True)
             audio_bytes = _segment_to_wav_bytes(segment)
             text = await self.llm_client.transcribe_bytes(audio_bytes)
+
             yield UserTurn(text=text, audio_bytes=audio_bytes, audio_array=segment)
 
 
