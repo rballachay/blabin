@@ -1,4 +1,3 @@
-import re
 from datetime import datetime
 from typing import Any, TypedDict
 
@@ -7,6 +6,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, START, StateGraph
 
 from src.db.speaker import VoiceIdentifier
+from src.llm.analyzer import MistakeAnalyzer
 from src.llm.client import AsyncLLMClient
 from src.llm.prompt import PromptManager
 
@@ -28,6 +28,7 @@ class _ConvState(TypedDict, total=True):
 
     # Per-turn output
     response: str | None
+    mistakes: list[dict]  # NEW: extracted mistake records
 
 
 class ConversationAgent:
@@ -62,25 +63,17 @@ class ConversationAgent:
             convert_system_message_to_human=True,
         )
 
+        self.mistake_analyzer = MistakeAnalyzer(self.llm)
+
         self.voice_identifier = voice_identifier
         self.llm_client = llm_client
 
         # Simple in-class memory for chat history
         self._history: list[dict[str, str]] = []
+        self.last_mistakes: list[dict] = []  # NEW: expose latest analysis
 
         # Build a LangGraph for the conversation turn
         self._graph = self._build_graph()
-
-    def _extract_name_from_text(self, text: str) -> str | None:
-        if not text:
-            return None
-        m = re.search(r"(?:je m'appelle|moi c['’]est)\s+([A-Za-zÀ-ÿ\-]{2,})", text, flags=re.I)
-        if m:
-            return m.group(1).strip()
-        tokens = re.findall(r'[A-Za-zÀ-ÿ\-]{2,}', text)
-        if 1 <= len(tokens) <= 3:
-            return tokens[-1].capitalize()
-        return None
 
     def _build_graph(self):
         g = StateGraph(_ConvState)
@@ -91,7 +84,7 @@ class ConversationAgent:
             If a candidate is found, ask for confirmation rather than setting the speaker directly.
             """
             # awaiting confirmation for the voice, don't try again
-            if self.awaiting_confirmation:
+            if state.get('awaiting_confirmation'):
                 return {}
 
             if state.get('current_speaker'):
@@ -103,15 +96,9 @@ class ConversationAgent:
                 return {}
 
             seg = state.get('audio_array')
-            if self.voice_identifier is None:
-                return {}
-
             if isinstance(seg, np.ndarray):
                 if seg.size > 0:
-                    try:
-                        name, _ = self.voice_identifier.identify_speaker(seg)
-                    except Exception:
-                        name = 'unknown'
+                    name, _ = self.voice_identifier.identify_speaker(seg)
 
                     if name and name != 'unknown':
                         ask = f'Je connais votre voix! Est-ce que vous êtes bien {name} ?'
@@ -142,7 +129,7 @@ class ConversationAgent:
             proposed = state.get('proposed_name')
 
             # If user directly provides a different name, accept it
-            provided = self._extract_name_from_text(user_text)
+            provided = await self.llm_client.get_speaker_name(user_text)
             if provided:
                 greet = f'Ravi de vous rencontrer, {provided} !'
                 return {
@@ -203,9 +190,9 @@ class ConversationAgent:
                     'conversation_started': True,
                 }
 
-            extracted = self._extract_name_from_text(user_text)
+            extracted = await self.llm_client.get_speaker_name(user_text)
 
-            if extracted:
+            if extracted != 'unknown':
                 greet = f'Enchanté(e), {extracted} !'
                 return {
                     'current_speaker': extracted,
@@ -224,6 +211,19 @@ class ConversationAgent:
                 'response': response['response'],
                 'conversation_started': True,
             }
+
+        async def analyze_mistakes(state: _ConvState) -> dict[str, Any]:
+            user_text = (state.get('user_text') or '').strip()
+            if not user_text:
+                return {'mistakes': []}
+            if state.get('awaiting_confirmation') and not state.get('name_just_discovered'):
+                return {'mistakes': []}
+
+            try:
+                records = await self.mistake_analyzer.analyze(user_text)
+            except Exception:
+                records = []
+            return {'mistakes': records}
 
         async def generate_response(state: _ConvState) -> dict[str, Any]:
             """
@@ -266,13 +266,15 @@ class ConversationAgent:
         g.add_node('identify_from_voice', identify_from_voice)
         g.add_node('confirm_identity', confirm_identity)
         g.add_node('extract_or_ask_name', extract_or_ask_name)
+        g.add_node('analyze_mistakes', analyze_mistakes)
         g.add_node('generate_response', generate_response)
 
         # Flow: voice-ID -> confirm -> text fallback -> chat
         g.add_edge(START, 'identify_from_voice')
         g.add_edge('identify_from_voice', 'confirm_identity')
         g.add_edge('confirm_identity', 'extract_or_ask_name')
-        g.add_edge('extract_or_ask_name', 'generate_response')
+        g.add_edge('extract_or_ask_name', 'analyze_mistakes')
+        g.add_edge('analyze_mistakes', 'generate_response')
         g.add_edge('generate_response', END)
 
         return g.compile()
@@ -305,19 +307,11 @@ class ConversationAgent:
             'user_text': text,
             'audio_bytes': audio_bytes,
             'audio_array': audio_array,
-            'awaiting_confirmation': False,
-            'proposed_name': None,
+            'awaiting_confirmation': self.awaiting_confirmation,
+            'proposed_name': self.proposed_name,
             'response': None,
+            'mistakes': [],  # NEW
         }
-
-        # Seed pending confirmation/proposed_name from last assistant turn if we asked it
-        if self._history:
-            last = self._history[-1]
-            if last.get('role') == 'assistant' and 'êtes bien' in last.get('content', ''):
-                m = re.search(r'êtes bien\s+([A-Za-zÀ-ÿ\-]{2,})', last['content'])
-                if m:
-                    state['proposed_name'] = m.group(1)
-                    state['awaiting_confirmation'] = True
 
         # Run the graph for this turn
         result = await self._graph.ainvoke(state)
@@ -330,6 +324,8 @@ class ConversationAgent:
             result.get('conversation_started', self.conversation_started)
         )
 
+        self.last_mistakes = result.get('mistakes', []) or []
+
         # Update history
         if text:
             self._history.append({'role': 'user', 'content': text})
@@ -341,6 +337,7 @@ class ConversationAgent:
     def reset_conversation(self) -> None:
         self.conversation_started = False
         self._history = []
+        self.last_mistakes = []
 
     def say_hello(self) -> str:
         return self._get_time_appropriate_greeting()
