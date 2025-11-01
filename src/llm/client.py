@@ -44,65 +44,6 @@ class AsyncLLMClient:
         )
         return bytes(response.candidates[0].content.parts[0].inline_data.data)
 
-    async def get_speaker_name(self, text: str) -> str:
-        """
-        Use Gemini to identify if this is a known speaker.
-        Returns (is_known, speaker_name or None).
-        """
-        prompt = [
-            {
-                'role': 'user',
-                'parts': [
-                    {'text': text},
-                    {
-                        'text': (
-                            'Please analyze this text, and determine if they say their name. If so,'
-                            "tell me their name. If not, just say 'unknown'. "
-                            "Format: either 'unknown' or the name only."
-                        )
-                    },
-                ],
-            }
-        ]
-
-        response = await self.client.aio.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-        )
-        text = response.text.strip().lower()
-
-        return text
-
-    async def is_confirmation(self, text: str) -> bool:
-        """
-        Check if the given text is a confirmation (yes) response.
-        """
-        prompt = [
-            {
-                'role': 'user',
-                'parts': [
-                    {'text': text},
-                    {
-                        'text': (
-                            'You are a conversation assistant. '
-                            'Analyze the text and determine if the speaker is confirming yes or no.'
-                            "Respond with exactly 'NONE' if it's not a confirmation, "
-                            'or else respond with exactly "YES" or "NO".'
-                        ),
-                    },
-                ],
-            },
-        ]
-        response = await self.client.aio.models.generate_content(
-            model='gemini-2.5-flash', contents=prompt
-        )
-
-        text = response.text.strip().upper()
-
-        if text == 'YES':
-            return True
-        return False
-
     async def transcribe_bytes(self, audio_bytes: bytes) -> str:
         # Send to LLM with audio transcription prompt
         contents = [

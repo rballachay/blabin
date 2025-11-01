@@ -2,6 +2,8 @@
 data/*.db
 mlruns/*
 data/*.csv
+data/*.db-shm
+data/*.db-wal
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -1,4 +1,3 @@
-from datetime import datetime
 from typing import Any, TypedDict
 
 import numpy as np
@@ -7,7 +6,7 @@ from langgraph.graph import END, START, StateGraph
 
 from src.db.speaker import VoiceIdentifier
 from src.llm.analyzer import MistakeAnalyzer
-from src.llm.client import AsyncLLMClient
+from src.llm.converse import ConversationService, get_time_appropriate_greeting
 from src.llm.prompt import PromptManager
 
 
@@ -28,14 +27,13 @@ class _ConvState(TypedDict, total=True):
 
     # Per-turn output
     response: str | None
-    mistakes: list[dict]  # NEW: extracted mistake records
+    mistakes: list[dict]  #: extracted mistake records
 
 
 class ConversationAgent:
     def __init__(
         self,
         api_key: str,
-        llm_client: AsyncLLMClient,
         voice_identifier: VoiceIdentifier,
         prompt_name: str = 'teacher_v1',
     ):
@@ -64,13 +62,13 @@ class ConversationAgent:
         )
 
         self.mistake_analyzer = MistakeAnalyzer(self.llm)
+        self.conversation_service = ConversationService(self.llm)
 
         self.voice_identifier = voice_identifier
-        self.llm_client = llm_client
 
         # Simple in-class memory for chat history
         self._history: list[dict[str, str]] = []
-        self.last_mistakes: list[dict] = []  # NEW: expose latest analysis
+        self.last_mistakes: list[dict] = []  #: expose latest analysis
 
         # Build a LangGraph for the conversation turn
         self._graph = self._build_graph()
@@ -79,59 +77,48 @@ class ConversationAgent:
         g = StateGraph(_ConvState)
 
         async def identify_from_voice(state: _ConvState) -> dict[str, Any]:
-            """
-            If an audio segment is provided and no current speaker yet, try voice identification.
-            If a candidate is found, ask for confirmation rather than setting the speaker directly.
-            """
-            # awaiting confirmation for the voice, don't try again
+            # ...existing checks...
             if state.get('awaiting_confirmation'):
                 return {}
-
             if state.get('current_speaker'):
                 return {}
-
-            # if the name was proposed in a prior turn, we don't try to identify
-            # again until we have determined that this is NOT their name
             if state.get('proposed_name'):
                 return {}
 
             seg = state.get('audio_array')
-            if isinstance(seg, np.ndarray):
-                if seg.size > 0:
-                    name, _ = self.voice_identifier.identify_speaker(seg)
-
-                    if name and name != 'unknown':
-                        ask = f'Je connais votre voix! Est-ce que vous êtes bien {name} ?'
-                        return {
-                            'proposed_name': name,
-                            'awaiting_confirmation': True,
-                            'response': ask,
-                            'conversation_started': True,
-                            'name_just_discovered': True,
-                        }
-
+            if isinstance(seg, np.ndarray) and seg.size > 0:
+                name, _ = self.voice_identifier.identify_speaker(seg)
+                if name and name != 'unknown':
+                    ask = await self.conversation_service.make_confirmation_request(
+                        state.get('user_text', ''), name
+                    )
+                    return {
+                        'proposed_name': name,
+                        'awaiting_confirmation': True,
+                        'response': ask,
+                        'conversation_started': True,
+                        'name_just_discovered': True,
+                    }
             return {}
 
         async def confirm_identity(state: _ConvState) -> dict[str, Any]:
-            """
-            If awaiting confirmation, interpret the user's text as YES/NO, or accept a provided name.
-            """
+            # ...existing guards...
             if state.get('current_speaker'):
                 return {}
-
             if not state.get('awaiting_confirmation'):
                 return {}
-
             if state.get('name_just_discovered'):
                 return {}
 
             user_text = (state.get('user_text') or '').strip()
             proposed = state.get('proposed_name')
 
-            # If user directly provides a different name, accept it
-            provided = await self.llm_client.get_speaker_name(user_text)
-            if provided:
-                greet = f'Ravi de vous rencontrer, {provided} !'
+            # If user provides a name directly (text), accept it and greet contextually
+            provided = await self.conversation_service.get_speaker_name(user_text)
+            if provided and provided != 'unknown':
+                greet = await self.conversation_service.make_greeting(
+                    user_text, provided, returning=False
+                )
                 return {
                     'current_speaker': provided,
                     'proposed_name': None,
@@ -140,14 +127,16 @@ class ConversationAgent:
                     'conversation_started': True,
                 }
 
-            # Otherwise classify as yes/no via LLM client
+            # Otherwise classify as yes/no
             try:
-                decision = await self.llm_client.is_confirmation(user_text)
+                decision = await self.conversation_service.is_confirmation(user_text)
             except Exception:
                 decision = False
 
             if decision and proposed:
-                greet = f'Ravi de vous revoir, {proposed} !'
+                greet = await self.conversation_service.make_greeting(
+                    user_text, proposed, returning=True
+                )
                 return {
                     'current_speaker': proposed,
                     'proposed_name': None,
@@ -156,26 +145,28 @@ class ConversationAgent:
                     'conversation_started': True,
                 }
             if decision is False:
+                ask_name = await self.conversation_service.ask_for_name(
+                    user_text, reason='user declined proposed name'
+                )
                 return {
                     'proposed_name': None,
                     'awaiting_confirmation': False,
-                    'response': "D'accord. Comment vous appelez-vous ?",
+                    'response': ask_name,
                     'conversation_started': True,
                 }
 
-            # Not sure yet; gently ask again if we haven't replied this turn
             if not state.get('response'):
+                clarify = await self.conversation_service.clarify_confirmation(
+                    user_text, proposed or ''
+                )
                 return {
-                    'response': "Pouvez-vous confirmer, s'il vous plaît ? Répondez par oui ou non.",
+                    'response': clarify,
                     'conversation_started': True,
                 }
             return {}
 
         async def extract_or_ask_name(state: _ConvState) -> dict[str, Any]:
-            """
-            If speaker still unknown after voice step/confirmation, try extracting a name from text.
-            If not present, ask for their name (text-only fallback).
-            """
+            # ...existing guards...
             if state.get('current_speaker'):
                 return {}
             if state.get('response'):
@@ -185,27 +176,30 @@ class ConversationAgent:
 
             user_text = (state.get('user_text') or '').strip()
             if not user_text:
+                ask_name = await self.conversation_service.ask_for_name(
+                    '', reason='no usable text in this turn'
+                )
                 return {
-                    'response': 'Je ne crois pas vous connaître. Comment vous appelez-vous ?',
+                    'response': ask_name,
                     'conversation_started': True,
                 }
 
-            extracted = await self.llm_client.get_speaker_name(user_text)
-
+            extracted = await self.conversation_service.get_speaker_name(user_text)
             if extracted != 'unknown':
-                greet = f'Enchanté(e), {extracted} !'
+                greet = await self.conversation_service.make_greeting(
+                    user_text, extracted, returning=False
+                )
                 return {
                     'current_speaker': extracted,
                     'response': greet,
                     'conversation_started': True,
                 }
 
-            # respond to what they're saying, then ask their name
+            # ...existing content-first fallback remains...
             state['system_prompt'] += (
-                "At the end of your response, mention you don't know them, and need to ask their name"
+                " At the end of your response, mention you don't know them, and need to ask their name."
             )
-            state['current_speaker'] = 'unknown'  # temporary to allow response generation
-
+            state['current_speaker'] = 'unknown'
             response = await generate_response(state)
             return {
                 'response': response['response'],
@@ -279,15 +273,6 @@ class ConversationAgent:
 
         return g.compile()
 
-    def _get_time_appropriate_greeting(self) -> str:
-        hour = datetime.now().hour
-        if 5 <= hour < 12:
-            return "Bonjour! Bon matin! Comment allez-vous aujourd'hui?"
-        elif 12 <= hour < 18:
-            return "Bonjour! Comment allez-vous aujourd'hui?"
-        else:
-            return 'Bonsoir! Comment allez-vous ce soir?'
-
     def set_speaker(self, speaker_name: str | None) -> None:
         self.current_speaker = speaker_name
 
@@ -310,7 +295,7 @@ class ConversationAgent:
             'awaiting_confirmation': self.awaiting_confirmation,
             'proposed_name': self.proposed_name,
             'response': None,
-            'mistakes': [],  # NEW
+            'mistakes': [],
         }
 
         # Run the graph for this turn
@@ -340,7 +325,7 @@ class ConversationAgent:
         self.last_mistakes = []
 
     def say_hello(self) -> str:
-        return self._get_time_appropriate_greeting()
+        return get_time_appropriate_greeting()
 
     def should_speak_response(self, response: str) -> bool:
         if not response or response.startswith('Error') or len(response.split()) > 200:

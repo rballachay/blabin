@@ -41,8 +41,8 @@ class ConversationRunner:
         self.agent = agent
         self.voice_identifier = voice_identifier
         self.input_processor = input_processor
-        self.output_processor = output_processor  # NEW
-        self.mistake_store = mistake_store  # NEW
+        self.output_processor = output_processor
+        self.mistake_store = mistake_store
         self.session_id = session_id
 
         # for one-time speaker persist (audio mode)
@@ -53,7 +53,7 @@ class ConversationRunner:
     async def run(self, llm_client: AsyncLLMClient) -> None:
         # greet once
         greeting = self.agent.say_hello()
-        await self.output_processor.output(greeting, llm_client, speak_allowed=True)  # NEW
+        await self.output_processor.output(greeting, llm_client, speak_allowed=True)
 
         # main loop over turns
         async for turn in self.input_processor.stream():
@@ -71,7 +71,7 @@ class ConversationRunner:
                 audio_array=turn.audio_array,
             )
             if response:
-                await self.output_processor.output(  # NEW
+                await self.output_processor.output(
                     response, llm_client, speak_allowed=self.agent.should_speak_response(response)
                 )
 
@@ -106,7 +106,7 @@ class ConversationRunner:
             time.sleep(0.5)
 
         # cleanup
-        await self.output_processor.aclose()  # NEW
+        await self.output_processor.aclose()
 
 
 async def main() -> None:
@@ -126,7 +126,8 @@ async def main() -> None:
     llm_client = AsyncLLMClient(api_key=gemini_key)
     voice_identifier = VoiceIdentifier(db_path='data/speakers.db', confidence=0.5)
     agent = ConversationAgent(
-        api_key=gemini_key, voice_identifier=voice_identifier, llm_client=llm_client
+        api_key=gemini_key,
+        voice_identifier=voice_identifier,
     )
 
     # Build input processor
