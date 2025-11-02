@@ -68,6 +68,7 @@ class MistakeAnalyzer:
             '- Ignore accents and minor spelling/orthography entirely (e.g., eleve vs élève). Do not report purely orthographic issues.\n'
             '- Only report clear grammatical errors and incorrect word choice/false friends. '
             "Include spelling only if it changes meaning, and classify it under 'word-choice/false-friend' or 'other-grammar' rather than 'spelling'.\n"
+            'Keep explanation of errors very brief, and only pick out one to two major errors per turn.\n'
             '- Use the following taxonomy for mistake_type (pick the single best category): '
             f"{taxonomy}. If none fits, use 'other-grammar'.\n"
             '- Keep explanations concise and pedagogical.\n'

@@ -5,8 +5,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, START, StateGraph
 
 from src.db.speaker import VoiceIdentifier
-from src.llm.analyzer import MistakeAnalyzer
 from src.llm.converse import ConversationService, get_time_appropriate_greeting
+from src.llm.mistakes import MistakeAnalyzer
 from src.llm.prompt import PromptManager
 
 
