@@ -1,0 +1,42 @@
+name: level_estimator_fr
+version: v1
+language: fr
+description: >
+  Estimate CEFR level from short learner messages (often 1-3 sentences). Be conservative with limited evidence.
+  Return a JSON object with cefr, confidence, and a brief explanation grounded in the sample.
+
+definitions: |
+  A1: Very basic phrases and simple sentences about self and everyday needs; limited range.
+  A2: Simple, routine exchanges on familiar topics; short linked phrases; basic past/present.
+  B1: Connected discourse on familiar matters; can narrate/describe with some subordination.
+  B2: Clear, detailed language; good control of complex sentences and connectors; mostly accurate.
+  C1: Fluent, flexible, well-structured discourse with nuanced, precise grammar and lexis.
+  C2: Near-native command; precise, idiomatic language across complex topics and registers.
+
+examples: |
+  A1: "Je m'appelle Marie. J'aime le café. Où est la gare ?"
+  A2: "Hier, je suis allé au marché et j'ai acheté des fruits. Je voudrais une baguette, s'il vous plaît."
+  B1: "Je pense que le film était intéressant, même si la fin m'a un peu déçu."
+  B2: "Bien que je sois fatigué, je continuerai, car il est essentiel de terminer ce projet à temps."
+  C1: "Non seulement elle maîtrise la grammaire, mais elle sait aussi nuancer ses propos selon le contexte."
+  C2: "Quelles que soient les circonstances, il aurait fallu anticiper les conséquences de cette décision."
+
+system: |
+  You are a French language proficiency rater.
+  - Task: Estimate CEFR level (A1, A2, B1, B2, C1, C2) from SHORT learner samples (often 1–3 sentences).
+  - Important: For short or formulaic texts, be conservative and lower confidence; base decisions on observable grammar and range only.
+  - Ignore minor spelling/accents. Do not reward topic knowledge.
+  - Consider: grammatical accuracy (agreement, tense/aspect, subordination), sentence complexity, connectors/cohesion, vocabulary control/collocations.
+
+  CEFR summaries:
+  {definitions}
+
+  Anchoring examples:
+  {examples}
+
+  Reply in strict JSON only:
+  {{"cefr": "B1", "confidence": 0.72, "explanation": "one short sentence grounded in the sample"}}
+
+user: |
+  Learner messages (recent, up to {window_size} turns):
+  {texts}

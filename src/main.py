@@ -19,6 +19,7 @@ from src.handleio.output import AudioOutputProcessor, OutputProcessor, TextOutpu
 from src.llm.agent import ConversationAgent
 from src.llm.client import AsyncLLMClient
 from src.llm.level import LevelEstimator
+from src.llm.prompt import PromptManager
 from src.vad.async_vad import AsyncVAD
 
 # GEMINI TTS only has 15 calls/day, disable for development
@@ -58,7 +59,9 @@ class ConversationRunner:
 
         # running history for french evaluation
         self._recent_texts: deque[str] = deque(maxlen=5)
-        self.level_estimator = LevelEstimator(llm=agent.llm, window_size=5)
+        self.level_estimator = LevelEstimator(
+            llm=agent.llm, prompt_manager=PromptManager(), window_size=5
+        )
         self.level_every = level_every
 
     async def run(self, llm_client: AsyncLLMClient) -> None:

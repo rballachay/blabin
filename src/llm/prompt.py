@@ -91,7 +91,7 @@ class PromptManager:
 
     def get_prompt(
         self, name: str, version: str | None = None, local_only: bool = False
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         if not local_only:
             ml = self.get_latest_from_mlflow(name)
             if ml:
@@ -101,10 +101,12 @@ class PromptManager:
             p = self._local_dir / f'{name}_{version}.yaml'
         else:
             p = self._local_dir / f'{name}.yaml'
+            print(p)
             if not p.exists():
                 matches = list(self._local_dir.glob(f'{name}*.yaml'))
                 p = matches[0] if matches else p
 
         if p.exists():
             return self.load_local(p)
-        return None
+
+        raise Exception(f'Missing prompt {str(p)}')

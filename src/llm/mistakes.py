@@ -7,6 +7,8 @@ from typing import Any
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+from src.llm.prompt import PromptManager  # NEW
+
 # A compact French error taxonomy from L2 literature (morpho‑syntax oriented)
 FR_ERROR_CATEGORIES: list[str] = [
     'conjugation',  # verb endings/person
@@ -46,15 +48,56 @@ class MistakeRecord:
 class MistakeAnalyzer:
     """
     Uses the LLM to extract structured mistake records from a user utterance.
+    Prompt text is loaded via PromptManager when available, with a safe fallback.
     Returns a list[dict] ready for DB insertion.
     """
 
     def __init__(
-        self, llm: ChatGoogleGenerativeAI, max_records: int = 10, language: str = 'fr'
+        self,
+        llm: ChatGoogleGenerativeAI,
+        prompt_manager: PromptManager,
+        max_records: int = 10,
+        language: str = 'fr',
+        prompt_name: str = 'mistakes_v1',
+        prompt_version: str | None = None,
+        prompt_local_only: bool = False,
     ) -> None:
         self.llm = llm
         self.max_records = max_records
         self.language = language
+        self._prompt_mgr = prompt_manager
+        self._prompt_name = prompt_name
+        self._prompt_version = prompt_version
+        self._prompt_local_only = prompt_local_only
+        self._prompt_cfg: dict[str, Any] = self._load_prompt_cfg()  # NEW
+
+    def _load_prompt_cfg(self) -> dict[str, Any]:  # NEW
+        return self._prompt_mgr.get_prompt(
+            name=self._prompt_name,
+            version=self._prompt_version,
+            local_only=self._prompt_local_only,
+        )
+
+    def _build_messages(self, text: str, ts: str) -> list[dict[str, str]]:  # NEW
+        taxonomy = ', '.join(FR_ERROR_CATEGORIES)
+        system_tpl = str(self._prompt_cfg.get('system', '') or '')
+        user_tpl = str(
+            self._prompt_cfg.get('user', '') or 'UTC timestamp: {timestamp}\nUtterance: {utterance}'
+        )
+        system_msg = system_tpl.format(
+            taxonomy=taxonomy,
+            max_records=self.max_records,
+            language=self.language,
+        )
+        user_msg = user_tpl.format(
+            timestamp=ts,
+            utterance=text,
+            language=self.language,
+        )
+        return [
+            {'role': 'system', 'content': system_msg},
+            {'role': 'user', 'content': user_msg},
+        ]
 
     async def analyze(self, utterance: str, timestamp: str | None = None) -> list[dict[str, Any]]:
         text = (utterance or '').strip()
@@ -62,27 +105,7 @@ class MistakeAnalyzer:
             return []
 
         ts = timestamp or datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-        taxonomy = ', '.join(FR_ERROR_CATEGORIES)
-        sys = (
-            'You are a strict French language error detector for L2 learners.\n'
-            '- Ignore accents and minor spelling/orthography entirely (e.g., eleve vs élève). Do not report purely orthographic issues.\n'
-            '- Only report clear grammatical errors and incorrect word choice/false friends. '
-            "Include spelling only if it changes meaning, and classify it under 'word-choice/false-friend' or 'other-grammar' rather than 'spelling'.\n"
-            'Keep explanation of errors very brief, and only pick out one to two major errors per turn.\n'
-            '- Use the following taxonomy for mistake_type (pick the single best category): '
-            f"{taxonomy}. If none fits, use 'other-grammar'.\n"
-            '- Keep explanations concise and pedagogical.\n'
-            'Output a JSON array of mistake objects with keys exactly: '
-            'mistake_type, error, correction, explanation, context, difficulty, timestamp.\n'
-            'difficulty must be one of A1, A2, B1, B2, C1, C2.\n'
-            "context must repeat the student's utterance verbatim.\n"
-            'timestamp must be the provided UTC timestamp.\n'
-            'If there are no mistakes, return [].'
-        )
-        prompt = [
-            {'role': 'system', 'content': sys},
-            {'role': 'user', 'content': f'UTC timestamp: {ts}\nUtterance: {text}'},
-        ]
+        prompt = self._build_messages(text, ts)  # NEW
 
         raw = ''
         try:
@@ -108,7 +131,6 @@ class MistakeAnalyzer:
                     difficulty=str(d.get('difficulty', 'A2')).strip().upper()[:2] or 'A2',
                     timestamp=str(d.get('timestamp') or ts),
                 )
-                # keep only meaningful records
                 if rec.error and rec.correction:
                     records.append(rec)
 

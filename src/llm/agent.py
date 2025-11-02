@@ -41,17 +41,9 @@ class ConversationAgent:
         self.conversation_started: bool = False
         self.proposed_name: str | None = None
         self.awaiting_confirmation: bool = False
-        self.system_prompt = (
-            'You are a helpful language learning assistant, please respond in the language in '
-            'which you are addressed. Correct any grammatical errors made by the speaker.'
-        )
-        try:
-            pm = PromptManager()
-            doc = pm.get_prompt(prompt_name, local_only=True)
-            if doc and isinstance(doc, dict):
-                self.system_prompt = str(doc.get('system', doc.get('prompt', self.system_prompt)))
-        except Exception:
-            pass
+        pm = PromptManager()
+        doc = pm.get_prompt(prompt_name, local_only=True)
+        self.system_prompt = str(doc['system'])
 
         # LLM (Gemini)
         self.llm = ChatGoogleGenerativeAI(
@@ -61,7 +53,7 @@ class ConversationAgent:
             convert_system_message_to_human=True,
         )
 
-        self.mistake_analyzer = MistakeAnalyzer(self.llm)
+        self.mistake_analyzer = MistakeAnalyzer(self.llm, pm)
         self.conversation_service = ConversationService(self.llm)
 
         self.voice_identifier = voice_identifier

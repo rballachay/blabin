@@ -5,31 +5,14 @@ import re
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+from src.llm.prompt import PromptManager
+
 CEFR_ORDER = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2']
 CEFR_IDX = {c: i for i, c in enumerate(CEFR_ORDER)}
-
-# Concise CEFR definitions (paraphrased)
-CEFR_DEFINITIONS: dict[str, str] = {
-    'A1': 'Very basic phrases and simple sentences about self and everyday needs; limited range.',
-    'A2': 'Simple, routine exchanges on familiar topics; short linked phrases; basic past/present.',
-    'B1': 'Connected discourse on familiar matters; can narrate/describe with some subordination.',
-    'B2': 'Clear, detailed language; good control of complex sentences and connectors; mostly accurate.',
-    'C1': 'Fluent, flexible, and well-structured discourse with nuanced, precise grammar and lexis.',
-    'C2': 'Near-native command; precise, idiomatic language across complex topics and registers.',
-}
-
-# Examples to anchor judgments on short samples
-CEFR_EXAMPLES: dict[str, str] = {
-    'A1': "Je m'appelle Marie. J'aime le café. Où est la gare ?",
-    'A2': "Hier, je suis allé au marché et j'ai acheté des fruits. Je voudrais une baguette, s'il vous plaît.",
-    'B1': "Je pense que le film était intéressant, même si la fin m'a un peu déçu.",
-    'B2': 'Bien que je sois fatigué, je continuerai, car il est essentiel de terminer ce projet à temps.',
-    'C1': 'Non seulement elle maîtrise la grammaire, mais elle sait aussi nuancer ses propos selon le contexte.',
-    'C2': 'Quelles que soient les circonstances, il aurait fallu anticiper les conséquences de cette décision.',
-}
 
 
 @dataclass(frozen=True)
@@ -55,8 +38,12 @@ class LevelEstimator:
     def __init__(
         self,
         llm: ChatGoogleGenerativeAI,
+        prompt_manager: PromptManager,
         window_size: int = 5,
         ema_alpha: float = 0.4,
+        prompt_name: str = 'levels_v1',
+        prompt_version: str | None = None,
+        prompt_local_only: bool = False,
     ):
         self.llm = llm
         self.window_size = max(1, window_size)
@@ -64,35 +51,46 @@ class LevelEstimator:
         self._ema_score: float | None = None
         self._history_texts: deque[str] = deque(maxlen=self.window_size)
 
-    def _definitions_block(self) -> str:
-        return '\n'.join(f'{lvl}: {desc}' for lvl, desc in CEFR_DEFINITIONS.items())
+        self._pm = prompt_manager
+        self._prompt_name = prompt_name
+        self._prompt_version = prompt_version
+        self._prompt_local_only = prompt_local_only
+        self._prompt_cfg: dict[str, Any] = self._load_prompt_cfg()
 
-    def _examples_block(self) -> str:
-        return '\n'.join(f'{lvl}: {ex}' for lvl, ex in CEFR_EXAMPLES.items())
+    def _load_prompt_cfg(self) -> dict[str, Any]:
+        return self._pm.get_prompt(
+            name=self._prompt_name,
+            version=self._prompt_version,
+            local_only=self._prompt_local_only,
+        )
+
+    def _build_messages(self, texts: list[str]) -> list[dict[str, str]]:
+        # Prefer YAML-configured prompt if available
+
+        system_tpl = str(self._prompt_cfg.get('system', '') or '')
+        user_tpl = str(self._prompt_cfg.get('user', '') or 'Learner messages:\n{texts}')
+        # definitions/examples may be provided in YAML; fall back to built-ins
+        defs = str(self._prompt_cfg.get('definitions'))
+        exs = str(self._prompt_cfg.get('examples'))
+        system_msg = system_tpl.format(
+            definitions=defs,
+            examples=exs,
+            window_size=self.window_size,
+        )
+        user_msg = user_tpl.format(
+            texts='\n\n'.join(texts[-self.window_size :]), window_size=self.window_size
+        )
+        return [
+            {'role': 'system', 'content': system_msg},
+            {'role': 'user', 'content': user_msg},
+        ]
 
     async def estimate_window(self, recent_texts: Iterable[str]) -> LevelEstimate | None:
         texts = [t for t in recent_texts if t and t.strip()]
         if not texts:
             return None
 
-        defs = self._definitions_block()
-        examples = self._examples_block()
-        sys = (
-            'You are a French language proficiency rater.\n'
-            '- Task: Estimate CEFR level (A1, A2, B1, B2, C1, C2) from SHORT learner samples (often 1–3 sentences).\n'
-            '- Important: For short or formulaic texts, be conservative and lower confidence; base decisions on observable grammar and range only.\n'
-            '- Ignore minor spelling/accents. Do not reward topic knowledge.\n'
-            '- Consider: grammatical accuracy (agreement, tense/aspect, subordination), sentence complexity, connectors/cohesion, vocabulary control/collocations.\n\n'
-            'CEFR summaries:\n'
-            f'{defs}\n\n'
-            'Anchoring examples:\n'
-            f'{examples}\n\n'
-            'Reply in strict JSON only: {"cefr": "B1", "confidence": 0.72, "explanation": "one short sentence grounded in the sample"}.'
-        )
-        prompt = [
-            {'role': 'system', 'content': sys},
-            {'role': 'user', 'content': '\n\n'.join(texts[-self.window_size :])},
-        ]
+        prompt = self._build_messages(texts)
 
         res = await self.llm.ainvoke(prompt)
         out = str(getattr(res, 'content', str(res))).strip()
