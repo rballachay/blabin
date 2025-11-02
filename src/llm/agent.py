@@ -1,9 +1,12 @@
+import random
+import re
 from typing import Any, TypedDict
 
 import numpy as np
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, START, StateGraph
 
+from src.db.news import NewsStore
 from src.db.speaker import VoiceIdentifier
 from src.llm.converse import ConversationService, get_time_appropriate_greeting
 from src.llm.mistakes import MistakeAnalyzer
@@ -29,12 +32,17 @@ class _ConvState(TypedDict, total=True):
     response: str | None
     mistakes: list[dict]  #: extracted mistake records
 
+    # Topic selection
+    awaiting_topic_choice: bool
+    news_choice_map: dict[str, Any]
+
 
 class ConversationAgent:
     def __init__(
         self,
         api_key: str,
         voice_identifier: VoiceIdentifier,
+        news_store: NewsStore,
         prompt_name: str = 'teacher_v1',
     ):
         self.current_speaker: str | None = None
@@ -57,6 +65,8 @@ class ConversationAgent:
         self.conversation_service = ConversationService(self.llm)
 
         self.voice_identifier = voice_identifier
+        self.news_store = news_store
+        self.topic_selected: bool = False
 
         # Simple in-class memory for chat history
         self._history: list[dict[str, str]] = []
@@ -188,7 +198,7 @@ class ConversationAgent:
                 }
 
             # ...existing content-first fallback remains...
-            state['system_prompt'] += (
+            state['system_prompt'] = (
                 " At the end of your response, mention you don't know them, and need to ask their name."
             )
             state['current_speaker'] = 'unknown'
@@ -211,6 +221,59 @@ class ConversationAgent:
                 records = []
             return {'mistakes': records}
 
+        async def handle_news_choice(state: _ConvState) -> dict[str, Any]:
+            # If we're waiting for a numeric choice, parse it
+            if not state.get('awaiting_topic_choice'):
+                return {}
+            user_text = (state.get('user_text') or '').strip()
+            if not user_text:
+                return {}
+            m = re.search(r'\b([1-5])\b', user_text)
+            if not m:
+                return {}
+            if not state.get('news_choice_map'):
+                return {}
+            article_id = state['news_choice_map'].get(m.group(1))
+            if not article_id or not self.news_store:
+                return {}
+            art = await self.news_store.get_article(article_id)
+            if not art:
+                return {}
+            title = art['title']
+            # Keep opener short; avoid dumping the whole article
+            opener = f"Super, parlons de « {title} ». Qu'en pensez-vous ?"
+            self.topic_selected = True
+            return {
+                'response': opener,
+                'awaiting_topic_choice': False,
+                'news_choice_map': None,
+                'conversation_started': True,
+            }
+
+        async def propose_news_topics(state: _ConvState) -> dict[str, Any]:
+            if self.topic_selected:
+                return {}
+            if state.get('response'):
+                return {}
+            if state.get('awaiting_confirmation'):
+                return {}
+            if not state.get('current_speaker'):
+                return {}
+
+            items = await self.news_store.recent_titles(limit=5, source='radio-canada')
+            if not items:
+                return {}
+            lines = []
+            choice_map: dict[str, int] = {}
+            for i, it in enumerate(items, start=1):
+                lines.append(f'{i}) {it["title"]}')
+                choice_map[str(i)] = int(it['id'])
+            return {
+                'awaiting_topic_choice': True,
+                'news_choice_map': choice_map,
+                'conversation_started': True,
+            }
+
         async def generate_response(state: _ConvState) -> dict[str, Any]:
             """
             If we already produced a response (e.g., confirm/greet/ask-name), do not overwrite.
@@ -226,8 +289,24 @@ class ConversationAgent:
             if not state.get('current_speaker'):
                 return {}
 
-            # Build conversation with system + history + this user turn
-            messages: list[dict[str, str]] = [{'role': 'system', 'content': state['system_prompt']}]
+            # Build a dynamic system prompt that includes topic policy and recent news titles
+            dynamic_system = state['system_prompt']
+
+            if not self.topic_selected:
+                items = await self.news_store.recent_titles(limit=5, source='radio-canada')
+                article_title = random.choice(items)
+                article = await self.news_store.get_article(article_title['id'])
+                dynamic_system += (
+                    '\n\nTopic selection policy:\n'
+                    '- If the user clearly proposes a subject/topic, follow that topic. Do not suggest news.\n'
+                    '- Otherwise, summarize (in 2-3 sentences) the following radio canada article, '
+                    'followed by an open question.\n'
+                    f'Title: {article["title"]}\n'
+                    f'{article["text"]}\n'
+                )
+
+            # Build conversation with system history + this user turn
+            messages: list[dict[str, str]] = [{'role': 'system', 'content': dynamic_system}]
             messages.extend(state.get('history', []))
             messages.append({'role': 'user', 'content': user_text})
 
@@ -252,6 +331,8 @@ class ConversationAgent:
         g.add_node('identify_from_voice', identify_from_voice)
         g.add_node('confirm_identity', confirm_identity)
         g.add_node('extract_or_ask_name', extract_or_ask_name)
+        g.add_node('handle_news_choice', handle_news_choice)
+        g.add_node('propose_news_topics', propose_news_topics)
         g.add_node('analyze_mistakes', analyze_mistakes)
         g.add_node('generate_response', generate_response)
 
@@ -259,7 +340,9 @@ class ConversationAgent:
         g.add_edge(START, 'identify_from_voice')
         g.add_edge('identify_from_voice', 'confirm_identity')
         g.add_edge('confirm_identity', 'extract_or_ask_name')
-        g.add_edge('extract_or_ask_name', 'analyze_mistakes')
+        g.add_edge('extract_or_ask_name', 'handle_news_choice')
+        g.add_edge('handle_news_choice', 'propose_news_topics')
+        g.add_edge('propose_news_topics', 'analyze_mistakes')
         g.add_edge('analyze_mistakes', 'generate_response')
         g.add_edge('generate_response', END)
 
@@ -288,6 +371,8 @@ class ConversationAgent:
             'proposed_name': self.proposed_name,
             'response': None,
             'mistakes': [],
+            'awaiting_topic_choice': False,
+            'news_choice_map': {},
         }
 
         # Run the graph for this turn

@@ -3,7 +3,7 @@ import asyncio
 import os
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import cast
 
 import numpy as np
@@ -11,8 +11,10 @@ import pyaudio
 import torch
 from dotenv import load_dotenv
 
+from src.context.news import NewsScraper
 from src.db.level import LevelStore
 from src.db.mistakes import MistakeStore, TurnRecord
+from src.db.news import NewsStore
 from src.db.speaker import VoiceIdentifier
 from src.handleio.input import AudioInputProcessor, InputProcessor, TextInputProcessor
 from src.handleio.output import AudioOutputProcessor, OutputProcessor, TextOutputProcessor
@@ -141,6 +143,34 @@ class ConversationRunner:
         await self.output_processor.aclose()
 
 
+async def refresh_context(news_store: NewsStore) -> None:
+    """
+    Refresh contextual data (e.g., news) on startup unless updated in the last 4 hours.
+    """
+
+    last = await news_store.last_fetch(source='radio-canada')
+    now = datetime.now(timezone.utc)
+    if last is None or (now - last) >= timedelta(minutes=4):
+        scraper = NewsScraper(feed_url='https://ici.radio-canada.ca/rss/4159')
+        items = scraper.get_top_articles(limit=5)
+        ts = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+        rows = [
+            {
+                'title': a.title,
+                'link': a.link,
+                'published': a.published,
+                'text': a.text,
+                'fetched_at': ts,
+            }
+            for a in items
+        ]
+        await news_store.upsert_articles(source='radio-canada', rows=rows)
+        print(f'[info] news refreshed: {len(rows)} articles at {ts}')
+    else:
+        age_min = int((datetime.now(timezone.utc) - last).total_seconds() // 60)
+        print(f'[info] news up-to-date (last fetch {age_min} min ago); skipping refresh')
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description='Conversation runner')
     parser.add_argument(
@@ -153,13 +183,16 @@ async def main() -> None:
     use_text_mode = bool(args.script or args.chat)
     audio_file = args.audio_file
 
+    # update news sources for discussion
+    news_store = NewsStore('data/news.db')
+    await refresh_context(news_store)
+
     # LLM + services
     gemini_key = os.getenv('GEMINI_API_KEY', '')
     llm_client = AsyncLLMClient(api_key=gemini_key)
     voice_identifier = VoiceIdentifier(db_path='data/speakers.db', confidence=0.5)
     agent = ConversationAgent(
-        api_key=gemini_key,
-        voice_identifier=voice_identifier,
+        api_key=gemini_key, voice_identifier=voice_identifier, news_store=news_store
     )
 
     # Build input processor
