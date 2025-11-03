@@ -150,7 +150,7 @@ async def refresh_context(news_store: NewsStore) -> None:
 
     last = await news_store.last_fetch(source='radio-canada')
     now = datetime.now(timezone.utc)
-    if last is None or (now - last) >= timedelta(minutes=4):
+    if last is None or (now - last) >= timedelta(hours=4):
         scraper = NewsScraper(feed_url='https://ici.radio-canada.ca/rss/4159')
         items = scraper.get_top_articles(limit=5)
         ts = now.strftime('%Y-%m-%dT%H:%M:%SZ')

@@ -1,8 +1,10 @@
-import random
-import re
+import functools
+from contextlib import contextmanager
 from typing import Any, TypedDict
 
+import mlflow
 import numpy as np
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, START, StateGraph
 
@@ -11,6 +13,59 @@ from src.db.speaker import VoiceIdentifier
 from src.llm.converse import ConversationService, get_time_appropriate_greeting
 from src.llm.mistakes import MistakeAnalyzer
 from src.llm.prompt import PromptManager
+from src.llm.tools import build_tools
+
+# Turn on auto tracing for Gemini
+mlflow.langchain.autolog()
+mlflow.set_tracking_uri('http://localhost:8080')
+mlflow.set_experiment('blabin-development')
+
+
+@contextmanager
+def start_span(name: str, inputs: dict | None = None):
+    class _Dummy:
+        def set_outputs(self, *_args, **_kwargs):  # no-op
+            pass
+
+    yield _Dummy()
+
+
+def trace_node(name: str):
+    """
+    Decorate a LangGraph node (async fn taking `state` and returning dict) to trace with MLflow.
+    Captures light inputs and result keys; LLM calls inside are traced by mlflow.langchain.autolog().
+    """
+
+    def _decorator(fn):
+        @functools.wraps(fn)
+        async def _wrapper(state: '_ConvState') -> dict[str, Any]:
+            # Keep inputs small to avoid leaking PII; just previews and flags
+            inputs = {
+                'node': name,
+                'current_speaker_set': bool(state.get('current_speaker')),
+                'awaiting_confirmation': bool(state.get('awaiting_confirmation')),
+                'history_len': len(state.get('history', [])),
+                'user_text_preview': (state.get('user_text') or '')[:120],
+            }
+            with start_span(name=name, inputs=inputs) as span:
+                result = await fn(state)
+                try:
+                    span.set_outputs(
+                        {
+                            'result_keys': sorted(result.keys()),
+                            'set_response': bool(result.get('response')),
+                            'mistake_count': len(result.get('mistakes', []))
+                            if isinstance(result.get('mistakes'), list)
+                            else 0,
+                        }
+                    )
+                except Exception:
+                    pass
+            return result
+
+        return _wrapper
+
+    return _decorator
 
 
 class _ConvState(TypedDict, total=True):
@@ -31,10 +86,6 @@ class _ConvState(TypedDict, total=True):
     # Per-turn output
     response: str | None
     mistakes: list[dict]  #: extracted mistake records
-
-    # Topic selection
-    awaiting_topic_choice: bool
-    news_choice_map: dict[str, Any]
 
 
 class ConversationAgent:
@@ -66,11 +117,15 @@ class ConversationAgent:
 
         self.voice_identifier = voice_identifier
         self.news_store = news_store
-        self.topic_selected: bool = False
 
         # Simple in-class memory for chat history
         self._history: list[dict[str, str]] = []
         self.last_mistakes: list[dict] = []  #: expose latest analysis
+
+        # build our llm with tools
+        self._tools = build_tools(news_store)
+        self._llm_with_tools = self.llm.bind_tools(self._tools)  # NEW
+        self._tool_map = {t.name: t for t in self._tools}  # NEW
 
         # Build a LangGraph for the conversation turn
         self._graph = self._build_graph()
@@ -78,8 +133,8 @@ class ConversationAgent:
     def _build_graph(self):
         g = StateGraph(_ConvState)
 
+        @trace_node('identify_from_voice')
         async def identify_from_voice(state: _ConvState) -> dict[str, Any]:
-            # ...existing checks...
             if state.get('awaiting_confirmation'):
                 return {}
             if state.get('current_speaker'):
@@ -103,8 +158,8 @@ class ConversationAgent:
                     }
             return {}
 
+        @trace_node('confirm_identity')
         async def confirm_identity(state: _ConvState) -> dict[str, Any]:
-            # ...existing guards...
             if state.get('current_speaker'):
                 return {}
             if not state.get('awaiting_confirmation'):
@@ -167,8 +222,8 @@ class ConversationAgent:
                 }
             return {}
 
+        @trace_node('extract_or_ask_name')
         async def extract_or_ask_name(state: _ConvState) -> dict[str, Any]:
-            # ...existing guards...
             if state.get('current_speaker'):
                 return {}
             if state.get('response'):
@@ -197,7 +252,6 @@ class ConversationAgent:
                     'conversation_started': True,
                 }
 
-            # ...existing content-first fallback remains...
             state['system_prompt'] = (
                 " At the end of your response, mention you don't know them, and need to ask their name."
             )
@@ -208,6 +262,7 @@ class ConversationAgent:
                 'conversation_started': True,
             }
 
+        @trace_node('analyze_mistakes')
         async def analyze_mistakes(state: _ConvState) -> dict[str, Any]:
             user_text = (state.get('user_text') or '').strip()
             if not user_text:
@@ -221,59 +276,7 @@ class ConversationAgent:
                 records = []
             return {'mistakes': records}
 
-        async def handle_news_choice(state: _ConvState) -> dict[str, Any]:
-            # If we're waiting for a numeric choice, parse it
-            if not state.get('awaiting_topic_choice'):
-                return {}
-            user_text = (state.get('user_text') or '').strip()
-            if not user_text:
-                return {}
-            m = re.search(r'\b([1-5])\b', user_text)
-            if not m:
-                return {}
-            if not state.get('news_choice_map'):
-                return {}
-            article_id = state['news_choice_map'].get(m.group(1))
-            if not article_id or not self.news_store:
-                return {}
-            art = await self.news_store.get_article(article_id)
-            if not art:
-                return {}
-            title = art['title']
-            # Keep opener short; avoid dumping the whole article
-            opener = f"Super, parlons de « {title} ». Qu'en pensez-vous ?"
-            self.topic_selected = True
-            return {
-                'response': opener,
-                'awaiting_topic_choice': False,
-                'news_choice_map': None,
-                'conversation_started': True,
-            }
-
-        async def propose_news_topics(state: _ConvState) -> dict[str, Any]:
-            if self.topic_selected:
-                return {}
-            if state.get('response'):
-                return {}
-            if state.get('awaiting_confirmation'):
-                return {}
-            if not state.get('current_speaker'):
-                return {}
-
-            items = await self.news_store.recent_titles(limit=5, source='radio-canada')
-            if not items:
-                return {}
-            lines = []
-            choice_map: dict[str, int] = {}
-            for i, it in enumerate(items, start=1):
-                lines.append(f'{i}) {it["title"]}')
-                choice_map[str(i)] = int(it['id'])
-            return {
-                'awaiting_topic_choice': True,
-                'news_choice_map': choice_map,
-                'conversation_started': True,
-            }
-
+        @trace_node('generate_response')
         async def generate_response(state: _ConvState) -> dict[str, Any]:
             """
             If we already produced a response (e.g., confirm/greet/ask-name), do not overwrite.
@@ -292,27 +295,39 @@ class ConversationAgent:
             # Build a dynamic system prompt that includes topic policy and recent news titles
             dynamic_system = state['system_prompt']
 
-            if not self.topic_selected:
-                items = await self.news_store.recent_titles(limit=5, source='radio-canada')
-                article_title = random.choice(items)
-                article = await self.news_store.get_article(article_title['id'])
-                dynamic_system += (
-                    '\n\nTopic selection policy:\n'
-                    '- If the user clearly proposes a subject/topic, follow that topic. Do not suggest news.\n'
-                    '- Otherwise, summarize (in 2-3 sentences) the following radio canada article, '
-                    'followed by an open question.\n'
-                    f'Title: {article["title"]}\n'
-                    f'{article["text"]}\n'
-                )
-
-            # Build conversation with system history + this user turn
+            # Build conversation with system history  this user turn
             messages: list[dict[str, str]] = [{'role': 'system', 'content': dynamic_system}]
             messages.extend(state.get('history', []))
             messages.append({'role': 'user', 'content': user_text})
 
+            # Let the LLM decide whether to call the tool; handle tool-call loop
+            out_text = ''
             try:
-                resp = await self.llm.ainvoke(messages)
-                out_text = str(getattr(resp, 'content', str(resp))).strip()
+                result = await self._llm_with_tools.ainvoke(messages)
+                # If the model asks to call tools, execute them and send results back
+                max_tool_rounds = 2
+                rounds = 0
+                while (
+                    isinstance(result, AIMessage)
+                    and getattr(result, 'tool_calls', None)
+                    and rounds < max_tool_rounds
+                ):
+                    rounds += 1
+                    for call in result.tool_calls:
+                        name = call.get('name')
+                        args = call.get('args') or {}
+                        call_id = call.get('id') or ''
+                        tool_impl = self._tool_map[name]
+                        try:
+                            tool_output = await tool_impl.ainvoke(args)
+                        except Exception as e:
+                            tool_output = f'Erreur outil `{name}`: {e}'
+                        messages.append(ToolMessage(content=str(tool_output), tool_call_id=call_id))
+
+                    # Ask the model to continue after tool outputs
+                    result = await self._llm_with_tools.ainvoke(messages)
+                    print(result)
+                out_text = str(getattr(result, 'content', str(result))).strip()
             except Exception:
                 out_text = "Désolé, j'ai rencontré un problème en générant une réponse."
 
@@ -331,8 +346,6 @@ class ConversationAgent:
         g.add_node('identify_from_voice', identify_from_voice)
         g.add_node('confirm_identity', confirm_identity)
         g.add_node('extract_or_ask_name', extract_or_ask_name)
-        g.add_node('handle_news_choice', handle_news_choice)
-        g.add_node('propose_news_topics', propose_news_topics)
         g.add_node('analyze_mistakes', analyze_mistakes)
         g.add_node('generate_response', generate_response)
 
@@ -340,9 +353,7 @@ class ConversationAgent:
         g.add_edge(START, 'identify_from_voice')
         g.add_edge('identify_from_voice', 'confirm_identity')
         g.add_edge('confirm_identity', 'extract_or_ask_name')
-        g.add_edge('extract_or_ask_name', 'handle_news_choice')
-        g.add_edge('handle_news_choice', 'propose_news_topics')
-        g.add_edge('propose_news_topics', 'analyze_mistakes')
+        g.add_edge('extract_or_ask_name', 'analyze_mistakes')
         g.add_edge('analyze_mistakes', 'generate_response')
         g.add_edge('generate_response', END)
 
@@ -371,8 +382,6 @@ class ConversationAgent:
             'proposed_name': self.proposed_name,
             'response': None,
             'mistakes': [],
-            'awaiting_topic_choice': False,
-            'news_choice_map': {},
         }
 
         # Run the graph for this turn
