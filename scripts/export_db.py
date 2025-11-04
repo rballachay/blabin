@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.db.mistakes import MistakeStore  # noqa: E402
 from src.db.news import NewsStore  # noqa: E402
+from src.db.session import SessionStore  # noqa: E402
 
 
 async def main() -> None:
@@ -23,6 +24,11 @@ async def main() -> None:
         '--news-db',
         default='data/news.db',
         help='Path to the news SQLite DB (default: data/news.db)',
+    )
+    parser.add_argument(
+        '--session-db',
+        default='data/sessions.db',
+        help='Path to the sessions SQLite DB (default: data/sessions.db)',
     )
     parser.add_argument(
         '--session-id', type=int, default=None, help='Filter to a specific session id (optional)'
@@ -37,18 +43,26 @@ async def main() -> None:
         default='data/news.csv',
         help='Output CSV for news articles (default: data/news.csv)',
     )
+    parser.add_argument(
+        '--sessions-out',
+        default='data/sessions.csv',
+        help='Output CSV for sessions (default: data/sessions.csv)',
+    )
     args = parser.parse_args()
 
     store = MistakeStore(db_path=args.db)
     store_news = NewsStore(db_path=args.news_db)
+    store_session = SessionStore(db_path=args.session_db)
 
     mistakes_path = await store.export_csv(args.mistakes_out, session_id=args.session_id)
     news_path = await store_news.export_news_csv(
         args.news_out,
     )
+    session_path = await store_session.export_sessions_csv(args.sessions_out)
 
     print(f'[ok] Mistakes CSV: {mistakes_path}')
     print(f'[ok] News CSV:     {news_path}')
+    print(f'[ok] Sessions CSV: {session_path}')
 
     await store.close()
     await store_news.close()

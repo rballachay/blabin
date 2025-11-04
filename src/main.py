@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from src.context.news import NewsScraper
 from src.db.mistakes import MistakeStore
 from src.db.news import NewsStore
+from src.db.session import SessionStore
 from src.db.speaker import VoiceIdentifier
 from src.handleio.input import AudioInputProcessor, InputProcessor, TextInputProcessor
 from src.handleio.output import AudioOutputProcessor, OutputProcessor, TextOutputProcessor
@@ -20,6 +21,7 @@ from src.llm.agent import ConversationAgent
 from src.llm.client import AsyncLLMClient
 from src.llm.mistakes import analyze_session
 from src.llm.prompt import PromptManager
+from src.utils.session import StatsAccumulator
 from src.vad.async_vad import AsyncVAD
 
 # GEMINI TTS only has 15 calls/day, disable for development
@@ -40,16 +42,20 @@ class ConversationRunner:
         input_processor: InputProcessor,
         output_processor: OutputProcessor,
         mistake_store: MistakeStore,
+        session_store: SessionStore,
         prompt_manager: PromptManager,
         session_id: int,
+        input_mode: str,
     ):
         self.agent = agent
         self.voice_identifier = voice_identifier
         self.input_processor = input_processor
         self.output_processor = output_processor
         self.mistake_store = mistake_store
+        self.session_store = session_store
         self.session_id = session_id
         self.prompt_manager = prompt_manager
+        self._stats = StatsAccumulator(session_id=session_id, input_mode=input_mode)
 
         # for one-time speaker persist (audio mode)
         self._speaker_persisted = False
@@ -71,18 +77,25 @@ class ConversationRunner:
 
                 print(f'User: {turn.text}')
                 self._turn_index += 1
+                self._stats.record_user(turn.text)
 
+                t0 = time.perf_counter()
                 response = await self.agent.process_message(
                     turn.text,
                     audio_bytes=turn.audio_bytes,
                     audio_array=turn.audio_array,
                 )
+                latency_s = time.perf_counter() - t0
+
                 if response:
                     await self.output_processor.output(
                         response,
                         llm_client,
                         speak_allowed=self.agent.should_speak_response(response),
                     )
+
+                    model_name = self.agent.llm.name
+                    self._stats.record_assistant(str(response), latency_s, model_name)
 
                 # Persist/update embedding once when we get a confirmed speaker and we have audio
                 if (
@@ -103,6 +116,8 @@ class ConversationRunner:
 
             # cleanup
             await self.output_processor.aclose()
+        except Exception as e:
+            raise e
         finally:
             # Analyze full session (assistant + user context)
             summary = await analyze_session(
@@ -114,6 +129,9 @@ class ConversationRunner:
                 counts=summary.get('counts', []),
                 level=summary.get('level') or {},
             )
+            # persist session statistics
+            sess_row = self._stats.finish()
+            await self.session_store.upsert_session(sess_row)
 
 
 async def refresh_context(news_store: NewsStore) -> None:
@@ -155,6 +173,7 @@ async def main() -> None:
 
     use_text_mode = bool(args.script or args.chat)
     audio_file = args.audio_file
+    input_mode = 'audio' if (not use_text_mode and audio_file) else 'text'
 
     # update news sources for discussion
     news_store = NewsStore('data/news.db')
@@ -165,8 +184,9 @@ async def main() -> None:
     llm_client = AsyncLLMClient(api_key=gemini_key)
     voice_identifier = VoiceIdentifier(db_path='data/speakers.db', confidence=0.5)
 
-    # handles prompts
+    # handles prompts + session data
     prompt_manager = PromptManager()
+    session_store = SessionStore('data/sessions.db')
 
     agent = ConversationAgent(
         api_key=gemini_key,
@@ -206,8 +226,10 @@ async def main() -> None:
         input_processor=input_processor,
         output_processor=output_processor,
         mistake_store=mistake_store,
+        session_store=session_store,
         prompt_manager=prompt_manager,
         session_id=session_id,
+        input_mode=input_mode,
     )
     await runner.run(llm_client)
 
