@@ -4,9 +4,10 @@ from typing import Any, TypedDict
 
 import mlflow
 import numpy as np
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.graph import END, START, StateGraph
+from langgraph.graph import END, StateGraph
+from langgraph.prebuilt import ToolNode
 
 from src.db.news import NewsStore
 from src.db.speaker import VoiceIdentifier
@@ -86,6 +87,7 @@ class _ConvState(TypedDict, total=True):
     # Per-turn output
     response: str | None
     mistakes: list[dict]  #: extracted mistake records
+    lc_messages: list
 
 
 class ConversationAgent:
@@ -124,8 +126,8 @@ class ConversationAgent:
 
         # build our llm with tools
         self._tools = build_tools(news_store)
-        self._llm_with_tools = self.llm.bind_tools(self._tools)  # NEW
-        self._tool_map = {t.name: t for t in self._tools}  # NEW
+        self._llm_with_tools = self.llm.bind_tools(self._tools)
+        self._tool_node = ToolNode(self._tools)
 
         # Build a LangGraph for the conversation turn
         self._graph = self._build_graph()
@@ -276,86 +278,104 @@ class ConversationAgent:
                 records = []
             return {'mistakes': records}
 
+        # Define the conditional edge that determines whether to continue or not
+        async def call_tool(state: _ConvState) -> dict[str, Any]:
+            """
+            Execute tool calls requested by the last AIMessage and append ToolMessages to lc_messages.
+            """
+            lc_messages = list(state.get('lc_messages') or [])
+            if not lc_messages or not isinstance(lc_messages[-1], AIMessage):
+                return {}
+            try:
+                out = await self._tool_node.ainvoke({'messages': [lc_messages[-1]]})
+                tool_msgs = out.get('messages', [])
+            except Exception as e:
+                tool_msgs = [ToolMessage(content=f'Erreur outil: {e}', tool_call_id='')]
+            lc_messages.extend(tool_msgs)
+            return {'lc_messages': lc_messages}
+
         @trace_node('generate_response')
         async def generate_response(state: _ConvState) -> dict[str, Any]:
             """
-            If we already produced a response (e.g., confirm/greet/ask-name), do not overwrite.
-            Otherwise, continue with the tutoring conversation.
+            LLM step:
+            - First call: build system+history+user as LC messages.
+            - Loop calls: reuse lc_messages (with ToolMessages) and ask the LLM again.
+            - If no tool_calls are returned, finalize response and update history.
             """
             if state.get('response'):
                 return {}
 
             user_text = (state.get('user_text') or '').strip()
-            if not user_text:
+            if not user_text or not state.get('current_speaker'):
                 return {}
 
-            if not state.get('current_speaker'):
-                return {}
+            # Reuse message list if coming back from tool execution; else build fresh
+            lc_messages = list(state.get('lc_messages') or [])
+            if not lc_messages:
+                lc_messages.append(SystemMessage(content=state['system_prompt']))
+                for m in state.get('history', []):
+                    role = (m.get('role') or '').strip()
+                    content = m.get('content') or ''
+                    if role == 'user':
+                        lc_messages.append(HumanMessage(content=content))
+                    else:
+                        lc_messages.append(AIMessage(content=content))
+                lc_messages.append(HumanMessage(content=user_text))
 
-            # Build a dynamic system prompt that includes topic policy and recent news titles
-            dynamic_system = state['system_prompt']
+            # One LLM step with tools advertised
+            ai = await self._llm_with_tools.ainvoke(lc_messages)
 
-            # Build conversation with system history  this user turn
-            messages: list[dict[str, str]] = [{'role': 'system', 'content': dynamic_system}]
-            messages.extend(state.get('history', []))
-            messages.append({'role': 'user', 'content': user_text})
+            lc_messages.append(ai)
 
-            # Let the LLM decide whether to call the tool; handle tool-call loop
-            out_text = ''
-            try:
-                result = await self._llm_with_tools.ainvoke(messages)
-                # If the model asks to call tools, execute them and send results back
-                max_tool_rounds = 2
-                rounds = 0
-                while (
-                    isinstance(result, AIMessage)
-                    and getattr(result, 'tool_calls', None)
-                    and rounds < max_tool_rounds
-                ):
-                    rounds += 1
-                    for call in result.tool_calls:
-                        name = call.get('name')
-                        args = call.get('args') or {}
-                        call_id = call.get('id') or ''
-                        tool_impl = self._tool_map[name]
-                        try:
-                            tool_output = await tool_impl.ainvoke(args)
-                        except Exception as e:
-                            tool_output = f'Erreur outil `{name}`: {e}'
-                        messages.append(ToolMessage(content=str(tool_output), tool_call_id=call_id))
+            # If LLM requested tools, return lc_messages and let conditional routing continue
+            if isinstance(ai, AIMessage) and getattr(ai, 'tool_calls', None):
+                return {'lc_messages': lc_messages}
 
-                    # Ask the model to continue after tool outputs
-                    result = await self._llm_with_tools.ainvoke(messages)
-                    print(result)
-                out_text = str(getattr(result, 'content', str(result))).strip()
-            except Exception:
-                out_text = "Désolé, j'ai rencontré un problème en générant une réponse."
+            # check if output is list or a string
+            if isinstance(ai.content, str):
+                out_text = str(ai.content).strip()
+            else:
+                out_text = str(ai.content[0]['text']).strip()
 
-            # Append assistant reply to history
+            print(ai.content)
+            # Otherwise finalize: take content as the assistant reply
             new_hist = list(state.get('history', []))
             new_hist.append({'role': 'user', 'content': user_text})
-            new_hist.append({'role': 'assistant', 'content': out_text})
+            if out_text:
+                new_hist.append({'role': 'assistant', 'content': out_text})
 
             return {
                 'response': out_text,
                 'history': new_hist,
                 'conversation_started': True,
+                'lc_messages': [],  # reset for next turn
             }
 
         # Nodes
         g.add_node('identify_from_voice', identify_from_voice)
         g.add_node('confirm_identity', confirm_identity)
         g.add_node('extract_or_ask_name', extract_or_ask_name)
-        g.add_node('analyze_mistakes', analyze_mistakes)
         g.add_node('generate_response', generate_response)
+        g.add_node('call_tool', call_tool)
 
-        # Flow: voice-ID -> confirm -> text fallback -> chat
-        g.add_edge(START, 'identify_from_voice')
+        # Edges
+        g.set_entry_point('identify_from_voice')
         g.add_edge('identify_from_voice', 'confirm_identity')
         g.add_edge('confirm_identity', 'extract_or_ask_name')
-        g.add_edge('extract_or_ask_name', 'analyze_mistakes')
-        g.add_edge('analyze_mistakes', 'generate_response')
-        g.add_edge('generate_response', END)
+        g.add_edge('extract_or_ask_name', 'generate_response')
+
+        # Routing helpers
+        def should_continue(state: _ConvState) -> str:
+            msgs = state.get('lc_messages') or []
+            last = msgs[-1] if msgs else None
+            if isinstance(last, AIMessage) and getattr(last, 'tool_calls', None):
+                return 'continue'
+            return 'end'
+
+        g.add_conditional_edges(
+            'generate_response', should_continue, {'continue': 'call_tool', 'end': END}
+        )
+        g.add_edge('call_tool', 'generate_response')
 
         return g.compile()
 
@@ -369,6 +389,7 @@ class ConversationAgent:
         audio_array: np.ndarray | None = None,
     ) -> str:
         # Prepare state for this turn (audio may be None in text modes)
+        self.current_speaker = 'greg'
         state: _ConvState = {
             'system_prompt': self.system_prompt,
             'current_speaker': self.current_speaker,
@@ -382,6 +403,7 @@ class ConversationAgent:
             'proposed_name': self.proposed_name,
             'response': None,
             'mistakes': [],
+            'lc_messages': [],
         }
 
         # Run the graph for this turn
