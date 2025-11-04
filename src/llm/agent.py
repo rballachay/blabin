@@ -12,7 +12,6 @@ from langgraph.prebuilt import ToolNode
 from src.db.news import NewsStore
 from src.db.speaker import VoiceIdentifier
 from src.llm.converse import ConversationService, get_time_appropriate_greeting
-from src.llm.mistakes import MistakeAnalyzer
 from src.llm.prompt import PromptManager
 from src.llm.tools import build_tools
 
@@ -55,9 +54,6 @@ def trace_node(name: str):
                         {
                             'result_keys': sorted(result.keys()),
                             'set_response': bool(result.get('response')),
-                            'mistake_count': len(result.get('mistakes', []))
-                            if isinstance(result.get('mistakes'), list)
-                            else 0,
                         }
                     )
                 except Exception:
@@ -86,7 +82,6 @@ class _ConvState(TypedDict, total=True):
 
     # Per-turn output
     response: str | None
-    mistakes: list[dict]  #: extracted mistake records
     lc_messages: list
 
 
@@ -114,7 +109,6 @@ class ConversationAgent:
             convert_system_message_to_human=True,
         )
 
-        self.mistake_analyzer = MistakeAnalyzer(self.llm, pm)
         self.conversation_service = ConversationService(self.llm)
 
         self.voice_identifier = voice_identifier
@@ -122,7 +116,6 @@ class ConversationAgent:
 
         # Simple in-class memory for chat history
         self._history: list[dict[str, str]] = []
-        self.last_mistakes: list[dict] = []  #: expose latest analysis
 
         # build our llm with tools
         self._tools = build_tools(news_store)
@@ -264,20 +257,6 @@ class ConversationAgent:
                 'conversation_started': True,
             }
 
-        @trace_node('analyze_mistakes')
-        async def analyze_mistakes(state: _ConvState) -> dict[str, Any]:
-            user_text = (state.get('user_text') or '').strip()
-            if not user_text:
-                return {'mistakes': []}
-            if state.get('awaiting_confirmation') and not state.get('name_just_discovered'):
-                return {'mistakes': []}
-
-            try:
-                records = await self.mistake_analyzer.analyze(user_text)
-            except Exception:
-                records = []
-            return {'mistakes': records}
-
         # Define the conditional edge that determines whether to continue or not
         async def call_tool(state: _ConvState) -> dict[str, Any]:
             """
@@ -337,7 +316,6 @@ class ConversationAgent:
             else:
                 out_text = str(ai.content[0]['text']).strip()
 
-            print(ai.content)
             # Otherwise finalize: take content as the assistant reply
             new_hist = list(state.get('history', []))
             new_hist.append({'role': 'user', 'content': user_text})
@@ -389,7 +367,6 @@ class ConversationAgent:
         audio_array: np.ndarray | None = None,
     ) -> str:
         # Prepare state for this turn (audio may be None in text modes)
-        self.current_speaker = 'greg'
         state: _ConvState = {
             'system_prompt': self.system_prompt,
             'current_speaker': self.current_speaker,
@@ -402,7 +379,6 @@ class ConversationAgent:
             'awaiting_confirmation': self.awaiting_confirmation,
             'proposed_name': self.proposed_name,
             'response': None,
-            'mistakes': [],
             'lc_messages': [],
         }
 
@@ -417,8 +393,6 @@ class ConversationAgent:
             result.get('conversation_started', self.conversation_started)
         )
 
-        self.last_mistakes = result.get('mistakes', []) or []
-
         # Update history
         if text:
             self._history.append({'role': 'user', 'content': text})
@@ -430,7 +404,6 @@ class ConversationAgent:
     def reset_conversation(self) -> None:
         self.conversation_started = False
         self._history = []
-        self.last_mistakes = []
 
     def say_hello(self) -> str:
         return get_time_appropriate_greeting()

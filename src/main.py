@@ -2,7 +2,6 @@ import argparse
 import asyncio
 import os
 import time
-from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
@@ -12,15 +11,14 @@ import torch
 from dotenv import load_dotenv
 
 from src.context.news import NewsScraper
-from src.db.level import LevelStore
-from src.db.mistakes import MistakeStore, TurnRecord
+from src.db.mistakes import MistakeStore
 from src.db.news import NewsStore
 from src.db.speaker import VoiceIdentifier
 from src.handleio.input import AudioInputProcessor, InputProcessor, TextInputProcessor
 from src.handleio.output import AudioOutputProcessor, OutputProcessor, TextOutputProcessor
 from src.llm.agent import ConversationAgent
 from src.llm.client import AsyncLLMClient
-from src.llm.level import LevelEstimator
+from src.llm.mistakes import analyze_session
 from src.llm.prompt import PromptManager
 from src.vad.async_vad import AsyncVAD
 
@@ -42,16 +40,13 @@ class ConversationRunner:
         input_processor: InputProcessor,
         output_processor: OutputProcessor,
         mistake_store: MistakeStore,
-        level_store: LevelStore,
         session_id: int,
-        level_every: int = 1,
     ):
         self.agent = agent
         self.voice_identifier = voice_identifier
         self.input_processor = input_processor
         self.output_processor = output_processor
         self.mistake_store = mistake_store
-        self.level_store = level_store
         self.session_id = session_id
 
         # for one-time speaker persist (audio mode)
@@ -59,88 +54,64 @@ class ConversationRunner:
         self._last_segment: np.ndarray = np.array([], dtype=np.float32)
         self._turn_index = 0
 
-        # running history for french evaluation
-        self._recent_texts: deque[str] = deque(maxlen=5)
-        self.level_estimator = LevelEstimator(
-            llm=agent.llm, prompt_manager=PromptManager(), window_size=5
-        )
-        self.level_every = level_every
-
     async def run(self, llm_client: AsyncLLMClient) -> None:
-        # greet once
-        greeting = self.agent.say_hello()
-        await self.output_processor.output(greeting, llm_client, speak_allowed=True)
+        try:
+            # greet once
+            greeting = self.agent.say_hello()
+            await self.output_processor.output(greeting, llm_client, speak_allowed=True)
 
-        # main loop over turns
-        async for turn in self.input_processor.stream():
-            # keep last segment if available for embedding update
-            if isinstance(turn.audio_array, np.ndarray):
-                if turn.audio_array.size > 0:
-                    self._last_segment = turn.audio_array.copy()
+            # main loop over turns
+            async for turn in self.input_processor.stream():
+                # keep last segment if available for embedding update
+                if isinstance(turn.audio_array, np.ndarray):
+                    if turn.audio_array.size > 0:
+                        self._last_segment = turn.audio_array.copy()
 
-            print(f'User: {turn.text}')
-            self._turn_index += 1
+                print(f'User: {turn.text}')
+                self._turn_index += 1
 
-            response = await self.agent.process_message(
-                turn.text,
-                audio_bytes=turn.audio_bytes,
-                audio_array=turn.audio_array,
-            )
-            if response:
-                await self.output_processor.output(
-                    response, llm_client, speak_allowed=self.agent.should_speak_response(response)
+                response = await self.agent.process_message(
+                    turn.text,
+                    audio_bytes=turn.audio_bytes,
+                    audio_array=turn.audio_array,
                 )
-
-                # record the mistakes in this turn
-                ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-                await self.mistake_store.record_turn(
-                    TurnRecord(
-                        session_id=self.session_id,
-                        turn_index=self._turn_index,
-                        user_text=turn.text,
-                        assistant_text=response or '',
-                        timestamp=ts,
-                    ),
-                    mistakes=self.agent.last_mistakes,
-                )
-
-            # this will be used for the level-estimation every 5 turns
-            self._recent_texts.append(turn.text)
-            # Periodic window-based CEFR estimate
-            if (self._turn_index % self.level_every) == 0:
-                window_est = await self.level_estimator.estimate_window(self._recent_texts)
-
-                # will not have an estimate if there is no text
-                if window_est is not None:
-                    smoothed_cefr = self.level_estimator.smooth_level(window_est.cefr)
-                    await self.level_store.record_level(
-                        self.session_id,
-                        self._turn_index,
-                        smoothed_cefr,
-                        min(1.0, window_est.confidence + 0.05),
-                        'smoothed',
-                        window_est.window_size,
-                        window_est.explanation,
+                if response:
+                    await self.output_processor.output(
+                        response,
+                        llm_client,
+                        speak_allowed=self.agent.should_speak_response(response),
                     )
-            # Persist/update embedding once when we get a confirmed speaker and we have audio
-            if (
-                self.agent.current_speaker
-                and not self._speaker_persisted
-                and self._last_segment.size > 0
-            ):
-                name = self.agent.current_speaker
-                existed = self.voice_identifier.db.name_exists(name)
-                ok = await self.voice_identifier.confirm_and_update(name, self._last_segment)
-                if ok:
-                    self._speaker_persisted = True
-                    if not existed:
-                        print(f"[info] Created speaker '{name}' in DB.")
-                    else:
-                        print(f"[info] Updated embedding for returning speaker '{name}'.")
-            time.sleep(0.5)
 
-        # cleanup
-        await self.output_processor.aclose()
+                # Persist/update embedding once when we get a confirmed speaker and we have audio
+                if (
+                    self.agent.current_speaker
+                    and not self._speaker_persisted
+                    and self._last_segment.size > 0
+                ):
+                    name = self.agent.current_speaker
+                    existed = self.voice_identifier.db.name_exists(name)
+                    ok = await self.voice_identifier.confirm_and_update(name, self._last_segment)
+                    if ok:
+                        self._speaker_persisted = True
+                        if not existed:
+                            print(f"[info] Created speaker '{name}' in DB.")
+                        else:
+                            print(f"[info] Updated embedding for returning speaker '{name}'.")
+                time.sleep(0.5)
+
+            # cleanup
+            await self.output_processor.aclose()
+        finally:
+            # Analyze full session (assistant + user context)
+            summary = await analyze_session(
+                history=self.agent._history, llm=self.agent.llm, prompt_manager=PromptManager()
+            )
+            await self.mistake_store.record_session_summary(
+                self.session_id,
+                records=summary.get('records', []),
+                counts=summary.get('counts', []),
+                level=summary.get('level') or {},
+            )
 
 
 async def refresh_context(news_store: NewsStore) -> None:
@@ -218,9 +189,7 @@ async def main() -> None:
 
     # Mistake store + session
     mistake_store = MistakeStore('data/mistakes.db')
-    level_store = LevelStore('data/mistakes.db')
-    session_name = args.script or ('stdin-chat' if args.chat else (audio_file or 'voice'))
-    session_id = await mistake_store.start_session(name=session_name)
+    session_id = int(time.time() / 1000)
 
     runner = ConversationRunner(
         agent=agent,
@@ -228,7 +197,6 @@ async def main() -> None:
         input_processor=input_processor,
         output_processor=output_processor,
         mistake_store=mistake_store,
-        level_store=level_store,
         session_id=session_id,
     )
     await runner.run(llm_client)

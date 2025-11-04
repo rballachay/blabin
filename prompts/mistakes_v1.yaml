@@ -22,7 +22,3 @@ system: |
   - If there are no mistakes, return [].
   - Language of analysis: {language}.
   - Maximum records: {max_records} (truncate beyond this count).
-
-user: |
-  UTC timestamp: {timestamp}
-  Utterance: {utterance}

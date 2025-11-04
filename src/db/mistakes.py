@@ -1,20 +1,9 @@
 import asyncio
-import csv
-import hashlib
+import json
 import sqlite3
 from collections.abc import Iterable
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-
-@dataclass(frozen=True)
-class TurnRecord:
-    session_id: int
-    turn_index: int
-    user_text: str
-    assistant_text: str
-    timestamp: str  # ISO UTC
 
 
 class MistakeStore:
@@ -31,144 +20,125 @@ class MistakeStore:
         cur = self._conn.cursor()
         cur.executescript(
             """
-            CREATE TABLE IF NOT EXISTS sessions (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-              name TEXT
+            -- Session-level summaries (preferred storage for end-of-session aggregation)
+            CREATE TABLE IF NOT EXISTS session_summaries (
+                session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                records_json TEXT NOT NULL,        -- JSON array of mistake records
+                counts_json  TEXT NOT NULL,        -- JSON array of [mistake_type, count]
+                total_mistakes INTEGER NOT NULL,   -- convenience total
+                level_cefr TEXT,                   -- optional session-level CEFR
+                level_confidence REAL,
+                level_method TEXT,
+                level_window INTEGER,
+                level_explanation TEXT
             );
-            CREATE TABLE IF NOT EXISTS mistakes (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-              turn_index INTEGER NOT NULL,
-              hash TEXT NOT NULL, -- dedupe key within a session+turn
-              mistake_type TEXT NOT NULL,
-              error TEXT NOT NULL,
-              correction TEXT NOT NULL,
-              explanation TEXT NOT NULL,
-              context TEXT NOT NULL,        -- user's utterance
-              assistant_text TEXT NOT NULL, -- assistant reply for that turn
-              difficulty TEXT NOT NULL,
-              timestamp TEXT NOT NULL       -- turn timestamp
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_mistake_unique
-              ON mistakes(session_id, turn_index, hash);
             """
         )
         self._conn.commit()
 
-    async def start_session(self, name: str | None = None) -> int:
-        return await asyncio.to_thread(self._start_session_sync, name)
-
-    def _start_session_sync(self, name: str | None) -> int:
-        cur = self._conn.cursor()
-        cur.execute('INSERT INTO sessions(name) VALUES (?) RETURNING id', (name,))
-        row = cur.fetchone()
-        if row is None:
-            raise RuntimeError('No id returned from sessions insert')
-        self._conn.commit()
-        return int(row[0])
-
-    async def record_turn(
+    async def record_session_summary(
         self,
-        turn: TurnRecord,
-        mistakes: Iterable[dict[str, Any]],
+        session_id: int,
+        *,
+        records: Iterable[dict[str, Any]],
+        counts: Iterable[tuple[str, int]] | Iterable[list[Any]],
+        level: dict[str, Any] | None = None,
+        timestamp: str | None = None,
     ) -> None:
-        # Store only mistakes; no per-turn row is created.
-        await asyncio.to_thread(self._record_turn_sync, turn, list(mistakes))
+        await asyncio.to_thread(
+            self._record_session_summary_sync,
+            session_id,
+            list(records),
+            list(counts),
+            level or {},
+            timestamp,
+        )
 
-    def _record_turn_sync(self, turn: TurnRecord, mistakes: list[dict[str, Any]]) -> None:
-        if mistakes:
-            cur = self._conn.cursor()
-            for m in mistakes:
-                h = hashlib.sha1(
-                    f'{m.get("context", "")}|{m.get("error", "")}|{m.get("correction", "")}'.encode()
-                ).hexdigest()
-                cur.execute(
-                    """
-                    INSERT OR IGNORE INTO mistakes(
-                      session_id, turn_index, hash, mistake_type, error, correction,
-                      explanation, context, assistant_text, difficulty, timestamp
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        turn.session_id,
-                        turn.turn_index,
-                        h,
-                        m.get('mistake_type', ''),
-                        m.get('error', ''),
-                        m.get('correction', ''),
-                        m.get('explanation', ''),
-                        m.get('context', turn.user_text),
-                        turn.assistant_text,
-                        m.get('difficulty', 'A2'),
-                        m.get('timestamp', turn.timestamp),
-                    ),
-                )
-            self._conn.commit()
+    def _record_session_summary_sync(
+        self,
+        session_id: int,
+        records: list[dict[str, Any]],
+        counts: list[Any],
+        level: dict[str, Any],
+        timestamp: str | None,
+    ) -> None:
+        ts = (
+            timestamp
+            or sqlite3.connect(':memory:')
+            .execute("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+            .fetchone()[0]
+        )
+        total = int(len(records))
+        rec_json = json.dumps(records, ensure_ascii=False)
+        cnt_json = json.dumps(counts, ensure_ascii=False)
+        cefr = level.get('cefr')
+        conf = level.get('confidence')
+        method = level.get('method')
+        window = level.get('window_size') or level.get('window')
+        expl = level.get('explanation')
+        cur = self._conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO session_summaries(
+              session_id, created_at, records_json, counts_json, total_mistakes,
+              level_cefr, level_confidence, level_method, level_window, level_explanation
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+              created_at=excluded.created_at,
+              records_json=excluded.records_json,
+              counts_json=excluded.counts_json,
+              total_mistakes=excluded.total_mistakes,
+              level_cefr=excluded.level_cefr,
+              level_confidence=excluded.level_confidence,
+              level_method=excluded.level_method,
+              level_window=excluded.level_window,
+              level_explanation=excluded.level_explanation
+            """,
+            (session_id, ts, rec_json, cnt_json, total, cefr, conf, method, window, expl),
+        )
+        self._conn.commit()
+
+    async def get_session_summary(self, session_id: int) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self._get_session_summary_sync, session_id)
+
+    def _get_session_summary_sync(self, session_id: int) -> dict[str, Any] | None:
+        cur = self._conn.cursor()
+        cur.execute(
+            """
+            SELECT session_id, created_at, records_json, counts_json, total_mistakes,
+                   level_cefr, level_confidence, level_method, level_window, level_explanation
+            FROM session_summaries WHERE session_id=?
+            """,
+            (session_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            'session_id': row[0],
+            'created_at': row[1],
+            'records': json.loads(row[2] or '[]'),
+            'counts': json.loads(row[3] or '[]'),
+            'total_mistakes': row[4],
+            'level': {
+                'cefr': row[5],
+                'confidence': row[6],
+                'method': row[7],
+                'window_size': row[8],
+                'explanation': row[9],
+            },
+        }
+
+    async def export_summary_json(self, json_path: str, session_id: int) -> Path:
+        return await asyncio.to_thread(self._export_summary_json_sync, json_path, session_id)
+
+    def _export_summary_json_sync(self, json_path: str, session_id: int) -> Path:
+        out = Path(json_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        data = self._get_session_summary_sync(session_id) or {}
+        out.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+        return out
 
     async def close(self) -> None:
         await asyncio.to_thread(self._conn.close)
-
-    async def export_csv(self, csv_path: str, session_id: int | None = None) -> Path:
-        return await asyncio.to_thread(self._export_csv_sync, csv_path, session_id)
-
-    def _export_csv_sync(self, csv_path: str, session_id: int | None) -> Path:
-        out = Path(csv_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-
-        cols = [
-            'mistake_id',
-            'session_id',
-            'session_name',
-            'session_created_at',
-            'turn_index',
-            'turn_timestamp',
-            'user_text',  # from context
-            'assistant_text',
-            'mistake_type',
-            'error',
-            'correction',
-            'explanation',
-            'context',
-            'difficulty',
-            'mistake_timestamp',
-            'hash',
-        ]
-        where = 'WHERE m.session_id = ?' if session_id is not None else ''
-        args: tuple[Any, ...] = (session_id,) if session_id is not None else ()
-
-        sql = f"""
-        SELECT
-          m.id         AS mistake_id,
-          m.session_id AS session_id,
-          s.name       AS session_name,
-          s.created_at AS session_created_at,
-          m.turn_index AS turn_index,
-          m.timestamp  AS turn_timestamp,
-          m.context    AS user_text,
-          m.assistant_text AS assistant_text,
-          m.mistake_type AS mistake_type,
-          m.error      AS error,
-          m.correction AS correction,
-          m.explanation AS explanation,
-          m.context    AS context,
-          m.difficulty AS difficulty,
-          m.timestamp  AS mistake_timestamp,
-          m.hash       AS hash
-        FROM mistakes m
-        LEFT JOIN sessions s ON s.id = m.session_id
-        {where}
-        ORDER BY m.session_id, m.turn_index, m.id
-        """
-        cur = self._conn.cursor()
-        cur.execute(sql, args)
-
-        with out.open('w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=cols, extrasaction='ignore')
-            writer.writeheader()
-            for row in cur.fetchall():
-                record = {k: row[i] for i, k in enumerate(cols)}
-                writer.writerow(record)
-
-        return out
