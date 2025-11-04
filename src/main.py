@@ -40,6 +40,7 @@ class ConversationRunner:
         input_processor: InputProcessor,
         output_processor: OutputProcessor,
         mistake_store: MistakeStore,
+        prompt_manager: PromptManager,
         session_id: int,
     ):
         self.agent = agent
@@ -48,6 +49,7 @@ class ConversationRunner:
         self.output_processor = output_processor
         self.mistake_store = mistake_store
         self.session_id = session_id
+        self.prompt_manager = prompt_manager
 
         # for one-time speaker persist (audio mode)
         self._speaker_persisted = False
@@ -104,7 +106,7 @@ class ConversationRunner:
         finally:
             # Analyze full session (assistant + user context)
             summary = await analyze_session(
-                history=self.agent._history, llm=self.agent.llm, prompt_manager=PromptManager()
+                history=self.agent._history, llm=self.agent.llm, prompt_manager=self.prompt_manager
             )
             await self.mistake_store.record_session_summary(
                 self.session_id,
@@ -162,8 +164,15 @@ async def main() -> None:
     gemini_key = os.getenv('GEMINI_API_KEY', '')
     llm_client = AsyncLLMClient(api_key=gemini_key)
     voice_identifier = VoiceIdentifier(db_path='data/speakers.db', confidence=0.5)
+
+    # handles prompts
+    prompt_manager = PromptManager()
+
     agent = ConversationAgent(
-        api_key=gemini_key, voice_identifier=voice_identifier, news_store=news_store
+        api_key=gemini_key,
+        voice_identifier=voice_identifier,
+        news_store=news_store,
+        prompt_manager=prompt_manager,
     )
 
     # Build input processor
@@ -197,6 +206,7 @@ async def main() -> None:
         input_processor=input_processor,
         output_processor=output_processor,
         mistake_store=mistake_store,
+        prompt_manager=prompt_manager,
         session_id=session_id,
     )
     await runner.run(llm_client)

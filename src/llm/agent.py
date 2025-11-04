@@ -91,14 +91,14 @@ class ConversationAgent:
         api_key: str,
         voice_identifier: VoiceIdentifier,
         news_store: NewsStore,
+        prompt_manager: PromptManager,
         prompt_name: str = 'teacher_v1',
     ):
         self.current_speaker: str | None = None
         self.conversation_started: bool = False
         self.proposed_name: str | None = None
         self.awaiting_confirmation: bool = False
-        pm = PromptManager()
-        doc = pm.get_prompt(prompt_name, local_only=True)
+        doc = prompt_manager.get_prompt(prompt_name, local_only=True)
         self.system_prompt = str(doc['system'])
 
         # LLM (Gemini)

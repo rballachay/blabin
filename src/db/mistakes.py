@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import json
 import sqlite3
 from collections.abc import Iterable
@@ -22,7 +23,7 @@ class MistakeStore:
             """
             -- Session-level summaries (preferred storage for end-of-session aggregation)
             CREATE TABLE IF NOT EXISTS session_summaries (
-                session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+                session_id INTEGER PRIMARY KEY,
                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
                 records_json TEXT NOT NULL,        -- JSON array of mistake records
                 counts_json  TEXT NOT NULL,        -- JSON array of [mistake_type, count]
@@ -138,6 +139,55 @@ class MistakeStore:
         out.parent.mkdir(parents=True, exist_ok=True)
         data = self._get_session_summary_sync(session_id) or {}
         out.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+        return out
+
+    async def export_csv(self, csv_path: str, session_id: int | None = None) -> Path:
+        """
+        Export session_summaries to CSV. If session_id is provided, export only that row.
+        Columns: session_id, created_at, total_mistakes, level_cefr, level_confidence,
+                 level_method, level_window, level_explanation, records_json, counts_json
+        """
+        return await asyncio.to_thread(self._export_csv_sync, csv_path, session_id)
+
+    def _export_csv_sync(self, csv_path: str, session_id: int | None) -> Path:
+        out = Path(csv_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+
+        cols = [
+            'session_id',
+            'created_at',
+            'total_mistakes',
+            'level_cefr',
+            'level_confidence',
+            'level_method',
+            'level_window',
+            'level_explanation',
+            'records_json',
+            'counts_json',
+        ]
+
+        where = ''
+        args: list[Any] = []
+        if isinstance(session_id, int):
+            where = 'WHERE session_id = ?'
+            args.append(session_id)
+
+        sql = f"""
+        SELECT session_id, created_at, total_mistakes,
+               level_cefr, level_confidence, level_method, level_window, level_explanation,
+               records_json, counts_json
+        FROM session_summaries
+        {where}
+        ORDER BY created_at DESC, session_id DESC
+        """
+        cur = self._conn.cursor()
+        cur.execute(sql, tuple(args))
+
+        with out.open('w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(cols)
+            for row in cur.fetchall():
+                writer.writerow(row)
         return out
 
     async def close(self) -> None:

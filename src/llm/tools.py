@@ -5,7 +5,6 @@ from src.db.news import NewsStore
 
 
 class NewsTopicInput(BaseModel):
-    source: str = Field(default='radio-canada', description='News source key')
     limit: int = Field(default=5, ge=1, le=5, description='How many titles to fetch (max 5)')
     include_text: bool = Field(
         default=False, description='If true, include a short snippet from the article text'
@@ -14,7 +13,6 @@ class NewsTopicInput(BaseModel):
 
 class FetchArticleInput(BaseModel):
     index: int = Field(..., ge=1, description='1-based index from the numbered list (e.g., 1..5)')
-    source: str = Field(default='radio-canada', description='News source key')
     limit: int = Field(
         default=5, ge=1, le=5, description='Should match the list size previously requested'
     )
@@ -30,16 +28,14 @@ def build_tools(news_store: NewsStore):
     """
 
     @tool('fetch_news_topics', args_schema=NewsTopicInput)
-    async def fetch_news_topics(
-        source: str = 'radio-canada', limit: int = 5, include_text: bool = True
-    ) -> str:
+    async def fetch_news_topics(limit: int = 5, include_text: bool = True) -> str:
         """
         Fetch recent news titles for conversation topics. Returns:
         - A short policy reminder
         - A numbered list of titles (and optional snippets)
         """
 
-        items = await news_store.recent_titles(limit=limit, source=source)
+        items = await news_store.recent_titles(limit=limit)
 
         lines: list[str] = []
         for i, it in enumerate(items, start=1):
@@ -55,15 +51,13 @@ def build_tools(news_store: NewsStore):
         return '\n'.join(lines)
 
     @tool('fetch_news_article', args_schema=FetchArticleInput)
-    async def fetch_news_article(
-        index: int, source: str = 'radio-canada', limit: int = 5, max_chars: int = 2000
-    ) -> str:
+    async def fetch_news_article(index: int, limit: int = 5, max_chars: int = 2000) -> str:
         """
         Fetch the full article for the Nth item from the recent list (1-based index).
         Returns JSON: {"id", "title", "link", "published", "text", "source"}.
         To be called after fetch_news_topics.
         """
-        items = await news_store.recent_titles(limit=limit, source=source)
+        items = await news_store.recent_titles(limit=limit)
         item = items[index - 1]
 
         art = await news_store.get_article(int(item['id'])) or {}
@@ -78,7 +72,6 @@ def build_tools(news_store: NewsStore):
             'link': (art.get('link') or item.get('link') or '').strip(),
             'published': (art.get('published') or item.get('published') or ''),
             'text': text,
-            'source': source,
         }
         import json as _json
 

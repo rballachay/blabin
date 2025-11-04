@@ -10,7 +10,7 @@ system: |
   - Ignore accents and minor spelling/orthography entirely (e.g., eleve vs élève). Do not report purely orthographic issues.
   - Only report clear grammatical errors and incorrect word choice/false friends.
     Include spelling only if it changes meaning, and classify it under 'word-choice/false-friend' or 'other-grammar'.
-  - Keep explanations very brief. Prefer 1–2 major issues per turn; do not nitpick.
+  - Keep explanations very brief. Prefer 1-2 major issues per turn; do not nitpick.
   - Use the following taxonomy for mistake_type (pick the single best category):
     {taxonomy}
     If none fits, use 'other-grammar'.
