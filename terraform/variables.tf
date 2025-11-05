@@ -34,8 +34,3 @@ variable "service_account_email" {
   description = "Service account email for accessing secrets"
   type        = string
 }
-
-variable "gemini_api_key" {
-  description = "Gemini API key to store in Secret Manager"
-  type        = string
-  s

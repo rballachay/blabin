@@ -29,6 +29,7 @@ RUN groupadd --gid $USER_GID $USERNAME \
     && apt-get install -y sudo \
     &&  apt-get -y install portaudio19-dev \
     && apt install -y python3-pyaudio \
+    && apt install -y unzip \
     && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME
 

@@ -2,32 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import csv
-import os
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
 from google.cloud import bigquery
-from google.cloud.bigquery import DatasetReference
 
 
 class NewsStore:
     """BigQuery-backed news article store."""
-
-    TABLE_DDL = """
-    CREATE TABLE IF NOT EXISTS `{table_fq}` (
-      id INT64,
-      source STRING NOT NULL,
-      title STRING NOT NULL,
-      link STRING NOT NULL,
-      published TIMESTAMP,
-      text STRING NOT NULL,
-      fetched_at TIMESTAMP NOT NULL
-    )
-    PARTITION BY DATE(fetched_at)
-    CLUSTER BY source, link
-    """
 
     def __init__(
         self,
@@ -42,24 +26,6 @@ class NewsStore:
         self.client = bigquery.Client()
         self.dataset_fq = f'{self.project}.{self.dataset}'
         self.table_fq = f'{self.dataset_fq}.{self.table}'
-
-        # Ensure dataset and table exist
-        self._ensure_dataset()
-        self._ensure_table()
-
-    def _ensure_dataset(self) -> None:
-        dataset_ref = DatasetReference(self.project, self.dataset)
-        try:
-            self.client.get_dataset(dataset_ref)
-        except Exception:
-            dataset = bigquery.Dataset(self.dataset_fq)
-            dataset.location = os.getenv('BIGQUERY_LOCATION', 'US')
-            self.client.create_dataset(dataset, exists_ok=True)
-
-    def _ensure_table(self) -> None:
-        """Create table if it doesn't exist using embedded DDL."""
-        ddl = self.TABLE_DDL.format(table_fq=self.table_fq)
-        self.client.query(ddl).result()
 
     async def close(self) -> None:
         await asyncio.to_thread(self.client.close)

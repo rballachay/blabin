@@ -3,33 +3,14 @@ from __future__ import annotations
 import asyncio
 import csv
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 from google.cloud import bigquery
-from google.cloud.bigquery import DatasetReference
 
 
 class MistakeStore:
     """BigQuery-backed session mistake summaries store."""
-
-    TABLE_DDL = """
-    CREATE TABLE IF NOT EXISTS `{table_fq}` (
-      session_id INT64,
-      created_at TIMESTAMP NOT NULL,
-      records_json JSON,
-      counts_json JSON,
-      total_mistakes INT64 NOT NULL,
-      level_cefr STRING,
-      level_confidence FLOAT64,
-      level_method STRING,
-      level_window INT64,
-      level_explanation STRING
-    )
-    PARTITION BY DATE(created_at)
-    CLUSTER BY session_id
-    """
 
     def __init__(
         self,
@@ -44,22 +25,6 @@ class MistakeStore:
         self.client = bigquery.Client()
         self.dataset_fq = f'{self.project}.{self.dataset}'
         self.table_fq = f'{self.dataset_fq}.{self.table}'
-
-        self._ensure_dataset()
-        self._ensure_table()
-
-    def _ensure_dataset(self) -> None:
-        dataset_ref = DatasetReference(self.project, self.dataset)
-        try:
-            self.client.get_dataset(dataset_ref)
-        except Exception:
-            dataset = bigquery.Dataset(self.dataset_fq)
-            dataset.location = os.getenv('BIGQUERY_LOCATION', 'US')
-            self.client.create_dataset(dataset, exists_ok=True)
-
-    def _ensure_table(self) -> None:
-        ddl = self.TABLE_DDL.format(table_fq=self.table_fq)
-        self.client.query(ddl).result()
 
     async def close(self) -> None:
         await asyncio.to_thread(self.client.close)

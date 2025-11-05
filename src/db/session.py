@@ -2,74 +2,28 @@ from __future__ import annotations
 
 import asyncio
 import csv
-import os
 from pathlib import Path
 from typing import Any
 
 from google.cloud import bigquery
-from google.cloud.bigquery import DatasetReference
 
 
 class SessionStore:
     """BigQuery-backed session statistics store."""
-
-    SESSIONS_DDL = """
-    CREATE TABLE IF NOT EXISTS `{table_fq}` (
-      session_id INT64,
-      created_at TIMESTAMP NOT NULL,
-      ended_at TIMESTAMP,
-      duration_sec FLOAT64,
-      input_mode STRING,
-      turns_total INT64,
-      turns_user INT64,
-      turns_assistant INT64,
-      user_chars INT64,
-      assistant_chars INT64,
-      user_words INT64,
-      assistant_words INT64,
-      user_tokens_approx INT64,
-      assistant_tokens_approx INT64,
-      resp_latency_avg_ms FLOAT64,
-      resp_latency_p95_ms FLOAT64,
-      errors INT64,
-      notes STRING
-    )
-    PARTITION BY DATE(created_at)
-    CLUSTER BY session_id
-    """
 
     def __init__(
         self,
         project: str,
         dataset: str,
         sessions_table: str = 'sessions',
-        turns_table: str = 'session_turns',
     ) -> None:
         self.project = project
         self.dataset = dataset
         self.sessions_table = sessions_table
-        self.turns_table = turns_table
 
         self.client = bigquery.Client()
         self.dataset_fq = f'{self.project}.{self.dataset}'
         self.sessions_fq = f'{self.dataset_fq}.{self.sessions_table}'
-
-        self._ensure_dataset()
-        self._ensure_tables()
-
-    def _ensure_dataset(self) -> None:
-        dataset_ref = DatasetReference(self.project, self.dataset)
-        try:
-            self.client.get_dataset(dataset_ref)
-        except Exception:
-            dataset = bigquery.Dataset(self.dataset_fq)
-            dataset.location = os.getenv('BIGQUERY_LOCATION', 'US')
-            self.client.create_dataset(dataset, exists_ok=True)
-
-    def _ensure_tables(self) -> None:
-        # Create sessions table
-        ddl = self.SESSIONS_DDL.format(table_fq=self.sessions_fq)
-        self.client.query(ddl).result()
 
     async def close(self) -> None:
         await asyncio.to_thread(self.client.close)

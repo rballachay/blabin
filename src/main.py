@@ -181,20 +181,22 @@ async def main() -> None:
     if not gcp_project_id:
         raise RuntimeError('GCP_PROJECT_ID not set in environment variables')
 
-    environment = os.getenv('ENVIRONMENT', 'development')
+    bigquery_dataset = os.getenv('BIGQUERY_DATASET', 'blabin_dev')
 
     # update news sources for discussion
-    news_store = NewsStore(project=gcp_project_id, dataset=environment)
+    news_store = NewsStore(project=gcp_project_id, dataset=bigquery_dataset)
     await refresh_context(news_store)
 
     # LLM + services
     gemini_key = os.getenv('GEMINI_API_KEY', '')
     llm_client = AsyncLLMClient(api_key=gemini_key)
-    voice_identifier = VoiceIdentifier(project=gcp_project_id, dataset=environment, confidence=0.5)
+    voice_identifier = VoiceIdentifier(
+        project=gcp_project_id, dataset=bigquery_dataset, confidence=0.5
+    )
 
     # handles prompts + session data
     prompt_manager = PromptManager()
-    session_store = SessionStore(project=gcp_project_id, dataset=environment)
+    session_store = SessionStore(project=gcp_project_id, dataset=bigquery_dataset)
 
     agent = ConversationAgent(
         api_key=gemini_key,
@@ -225,7 +227,7 @@ async def main() -> None:
     output_processor = AudioOutputProcessor() if SPEAK_OUTPUT else TextOutputProcessor()
 
     # Mistake store + session
-    mistake_store = MistakeStore(project=gcp_project_id, dataset=environment)
+    mistake_store = MistakeStore(project=gcp_project_id, dataset=bigquery_dataset)
     session_id = int(time.time() / 1000)
 
     runner = ConversationRunner(

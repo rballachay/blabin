@@ -7,14 +7,12 @@ For production, consider Vertex AI Vector Search or separate vector DB.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
 from google.cloud import bigquery
-from google.cloud.bigquery import DatasetReference
 from resemblyzer import VoiceEncoder, normalize_volume
 from resemblyzer.hparams import audio_norm_target_dBFS
 
@@ -105,22 +103,6 @@ class SpeakerDB:
         self.client = bigquery.Client()
         self.dataset_fq = f'{self.project}.{self.dataset}'
         self.table_fq = f'{self.dataset_fq}.{self.table}'
-
-        self._ensure_dataset()
-        self._ensure_table()
-
-    def _ensure_dataset(self) -> None:
-        dataset_ref = DatasetReference(self.project, self.dataset)
-        try:
-            self.client.get_dataset(dataset_ref)
-        except Exception:
-            dataset = bigquery.Dataset(self.dataset_fq)
-            dataset.location = os.getenv('BIGQUERY_LOCATION', 'US')
-            self.client.create_dataset(dataset, exists_ok=True)
-
-    def _ensure_table(self) -> None:
-        ddl = self.TABLE_DDL.format(table_fq=self.table_fq)
-        self.client.query(ddl).result()
 
     @staticmethod
     def _serialize_embedding(emb: np.ndarray) -> str:
