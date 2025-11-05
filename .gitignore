@@ -237,3 +237,7 @@ override.tf.json
 # CLI configuration files
 .terraformrc
 terraform.rc
+
+# Allow templates
+!*.template.tfvars
+!*.template.tfvars.json

@@ -1,66 +1,69 @@
 # blabin
-Adaptive agent for helping me learn french faster
+Adaptive agent for helping me learn French faster
 
 ## Prerequisites
+- Use the dev container for this workspace (gcloud CLI is preinstalled).
 - A Google Cloud project with billing enabled
 - BigQuery API enabled in the project
-- This repo opened in the dev container (gcloud CLI is preinstalled)
 
-## 1) Authenticate to Google Cloud
+## Authenticate to Google Cloud
 ```sh
 gcloud init             # set up CLI and choose your project
 gcloud auth application-default login
 gcloud config set project <YOUR_GCP_PROJECT_ID>
 ```
 
-## 2) Create a Gemini API key
+## Create a Gemini API key
 ```sh
 "$BROWSER" https://aistudio.google.com/app/apikey
 ```
 Copy the key; you will add it to `.env` below.
 
-## 3) Provision infrastructure with Terraform
-```sh
-cd terraform
-cp dev.template.tfvars dev.tfvars
-# edit dev.tfvars values (at minimum):
-#   project_id           = "<YOUR_GCP_PROJECT_ID>"
-#   region               = "us-central1"         # or your preference
-#   location             = "US"                  # BigQuery location
-#   dataset_owner_email  = "<you@yourdomain.com>"
-#   environment          = "dev"
-terraform init
-terraform apply -var-file=dev.tfvars
-# Review the plan and type 'yes' to apply
-terraform output summary
-```
+## Infrastructure (Terraform)
+Set up cloud resources using the READMEs in the terraform folders:
+- Environment resources (BigQuery, etc.): see terraform/README.md
+- MLflow tracking server (Cloud Run + Cloud SQL + GCS): see terraform/mlflow/README.md
 
-## 4) Create your .env file
+Those guides cover creating tfvars from templates, enabling services, building/pushing the MLflow Docker image, and applying Terraform.
+
+## Create your .env file
 Create `.env` at the repo root with:
 ```sh
 # .env
+# owner of GCP account
+OWNER_EMAIL=<YOUR_EMAIL>
+
+# api key from gemini
 GEMINI_API_KEY=<YOUR_GEMINI_API_KEY>
 
 # Environment Configuration
 ENVIRONMENT=dev
 
 # GCP Configuration
-GCP_PROJECT_ID=<YOUR_GCP_PROJECT_ID>
 BIGQUERY_DATASET=dev_blabin
 BIGQUERY_LOCATION=US
+GOOGLE_CLOUD_PROJECT=<GOOGLE_CLOUD_PROJECT>
+GOOGLE_CLOUD_QUOTA_PROJECT=<GOOGLE_CLOUD_PROJECT>
+
+# settings for mlflow
+MLFLOW_URI_LOCAL=http://127.0.0.1:8081
+MLFLOW_EXPERIMENT=blabin-development
 ```
 
-Tip: you can populate the GCP-related values from Terraform outputs:
+## Using MLflow
+- Provision the remote MLflow server by following terraform/mlflow/README.md.
+- To browse the UI locally without manually handling tokens, use the proxy:
 ```sh
-cd terraform
-terraform output -json python_config | jq -r 'to_entries[] | "\(.key)=\(.value)"'
+cd terraform/mlflow
+chmod +x open.sh
+./open.sh
+"$BROWSER" http://localhost:8081
 ```
-Copy those lines into `.env` (alongside your GEMINI_API_KEY).
 
-## 5) Run the application (chat mode)
+## Run the application (chat mode)
 ```sh
 python -m src.main --chat
 ```
 
 ## Notes
-- If you see BigQuery permission errors, ensure ADC is set (`gcloud auth application-default login`) and the selected project matches your `.env` (`GCP_PROJECT_ID`).
+- If you see BigQuery permission errors, ensure ADC is set and the selected project matches your `.env` (GOOGLE_CLOUD_PROJECT).

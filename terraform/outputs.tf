@@ -44,7 +44,7 @@ output "python_config" {
   description = "Configuration values for Python .env file"
   value = {
     ENVIRONMENT       = var.environment
-    GCP_PROJECT_ID    = var.project_id
+    GOOGLE_CLOUD_PROJECT    = var.project_id
     BIGQUERY_DATASET  = google_bigquery_dataset.blabin.dataset_id
     BIGQUERY_LOCATION = google_bigquery_dataset.blabin.location
   }

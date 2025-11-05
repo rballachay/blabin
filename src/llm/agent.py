@@ -2,7 +2,6 @@ import functools
 from contextlib import contextmanager
 from typing import Any, TypedDict
 
-import mlflow
 import numpy as np
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -14,11 +13,6 @@ from src.db.speaker import VoiceIdentifier
 from src.llm.converse import ConversationService, get_time_appropriate_greeting
 from src.llm.prompt import PromptManager
 from src.llm.tools import build_tools
-
-# Turn on auto tracing for Gemini
-mlflow.langchain.autolog()
-mlflow.set_tracking_uri('http://localhost:8080')
-mlflow.set_experiment('blabin-development')
 
 
 @contextmanager

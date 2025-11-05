@@ -1,10 +1,12 @@
 import argparse
 import asyncio
+import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
+import mlflow
 import numpy as np
 import pyaudio
 import torch
@@ -176,27 +178,39 @@ async def main() -> None:
     input_mode = 'audio' if (not use_text_mode and audio_file) else 'text'
 
     # ingest env variables for BigQuery tables
-    gcp_project_id = os.getenv('GCP_PROJECT_ID')
+    google_cloud_project = os.getenv('GCP_PROJECT_ID')
 
-    if not gcp_project_id:
-        raise RuntimeError('GCP_PROJECT_ID not set in environment variables')
+    if not google_cloud_project:
+        raise RuntimeError('GOOGLE_CLOUD_PROJECT not set in environment variables')
 
     bigquery_dataset = os.getenv('BIGQUERY_DATASET', 'blabin_dev')
 
+    # attempt to set up mlflow autolog
+    mlflow_tracking_uri = os.getenv('MLFLOW_URI_LOCAL')
+    mlflow_experiment = os.getenv('MLFLOW_EXPERIMENT', 'blabin-development')
+    if not mlflow_tracking_uri:
+        logging.warning(
+            'MLflow disabled: set MLFLOW_TRACKING_URI in .env (see terraform/mlflow/README.md).'
+        )
+    else:
+        mlflow.set_tracking_uri(mlflow_tracking_uri)
+        mlflow.set_experiment(mlflow_experiment)
+        mlflow.langchain.autolog()
+
     # update news sources for discussion
-    news_store = NewsStore(project=gcp_project_id, dataset=bigquery_dataset)
+    news_store = NewsStore(project=google_cloud_project, dataset=bigquery_dataset)
     await refresh_context(news_store)
 
     # LLM + services
     gemini_key = os.getenv('GEMINI_API_KEY', '')
     llm_client = AsyncLLMClient(api_key=gemini_key)
     voice_identifier = VoiceIdentifier(
-        project=gcp_project_id, dataset=bigquery_dataset, confidence=0.5
+        project=google_cloud_project, dataset=bigquery_dataset, confidence=0.5
     )
 
     # handles prompts + session data
     prompt_manager = PromptManager()
-    session_store = SessionStore(project=gcp_project_id, dataset=bigquery_dataset)
+    session_store = SessionStore(project=google_cloud_project, dataset=bigquery_dataset)
 
     agent = ConversationAgent(
         api_key=gemini_key,
@@ -227,7 +241,7 @@ async def main() -> None:
     output_processor = AudioOutputProcessor() if SPEAK_OUTPUT else TextOutputProcessor()
 
     # Mistake store + session
-    mistake_store = MistakeStore(project=gcp_project_id, dataset=bigquery_dataset)
+    mistake_store = MistakeStore(project=google_cloud_project, dataset=bigquery_dataset)
     session_id = int(time.time() / 1000)
 
     runner = ConversationRunner(
