@@ -2,202 +2,193 @@ from __future__ import annotations
 
 import asyncio
 import csv
-import sqlite3
-from collections.abc import Iterable
+import os
 from pathlib import Path
 from typing import Any
 
+from google.cloud import bigquery
+from google.cloud.bigquery import DatasetReference
+
 
 class SessionStore:
-    def __init__(self, db_path: str = 'data/sessions.db') -> None:
-        self.path = Path(db_path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
-        self._conn.execute('PRAGMA journal_mode=WAL;')
-        self._conn.execute('PRAGMA synchronous=NORMAL;')
-        self._conn.execute('PRAGMA foreign_keys=ON;')
-        self._init_schema()
+    """BigQuery-backed session statistics store."""
 
-    def _init_schema(self) -> None:
-        cur = self._conn.cursor()
-        cur.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS sessions (
-                session_id INTEGER PRIMARY KEY,
-                created_at TEXT NOT NULL,             -- ISO8601 UTC
-                ended_at   TEXT,                      -- ISO8601 UTC
-                duration_sec REAL,                   -- total wall time
-                input_mode TEXT,                     -- audio|text
-                turns_total INTEGER,
-                turns_user INTEGER,
-                turns_assistant INTEGER,
-                user_chars INTEGER,
-                assistant_chars INTEGER,
-                user_words INTEGER,
-                assistant_words INTEGER,
-                user_tokens_approx INTEGER,
-                assistant_tokens_approx INTEGER,
-                resp_latency_avg_ms REAL,
-                resp_latency_p95_ms REAL,
-                errors INTEGER DEFAULT 0,
-                notes TEXT
-            );
-            """
-        )
-        self._conn.commit()
+    SESSIONS_DDL = """
+    CREATE TABLE IF NOT EXISTS `{table_fq}` (
+      session_id INT64,
+      created_at TIMESTAMP NOT NULL,
+      ended_at TIMESTAMP,
+      duration_sec FLOAT64,
+      input_mode STRING,
+      turns_total INT64,
+      turns_user INT64,
+      turns_assistant INT64,
+      user_chars INT64,
+      assistant_chars INT64,
+      user_words INT64,
+      assistant_words INT64,
+      user_tokens_approx INT64,
+      assistant_tokens_approx INT64,
+      resp_latency_avg_ms FLOAT64,
+      resp_latency_p95_ms FLOAT64,
+      errors INT64,
+      notes STRING
+    )
+    PARTITION BY DATE(created_at)
+    CLUSTER BY session_id
+    """
+
+    def __init__(
+        self,
+        project: str,
+        dataset: str,
+        sessions_table: str = 'sessions',
+        turns_table: str = 'session_turns',
+    ) -> None:
+        self.project = project
+        self.dataset = dataset
+        self.sessions_table = sessions_table
+        self.turns_table = turns_table
+
+        self.client = bigquery.Client()
+        self.dataset_fq = f'{self.project}.{self.dataset}'
+        self.sessions_fq = f'{self.dataset_fq}.{self.sessions_table}'
+
+        self._ensure_dataset()
+        self._ensure_tables()
+
+    def _ensure_dataset(self) -> None:
+        dataset_ref = DatasetReference(self.project, self.dataset)
+        try:
+            self.client.get_dataset(dataset_ref)
+        except Exception:
+            dataset = bigquery.Dataset(self.dataset_fq)
+            dataset.location = os.getenv('BIGQUERY_LOCATION', 'US')
+            self.client.create_dataset(dataset, exists_ok=True)
+
+    def _ensure_tables(self) -> None:
+        # Create sessions table
+        ddl = self.SESSIONS_DDL.format(table_fq=self.sessions_fq)
+        self.client.query(ddl).result()
 
     async def close(self) -> None:
-        await asyncio.to_thread(self._conn.close)
+        await asyncio.to_thread(self.client.close)
 
-    # High-level API
     async def upsert_session(self, session_row: dict[str, Any]) -> None:
         await asyncio.to_thread(self._upsert_session_sync, session_row)
 
-    async def insert_turns(self, session_id: int, turns: Iterable[dict[str, Any]]) -> None:
-        await asyncio.to_thread(self._insert_turns_sync, session_id, list(turns))
+    def _upsert_session_sync(self, r: dict[str, Any]) -> None:
+        params = [
+            bigquery.ScalarQueryParameter('session_id', 'INT64', r.get('session_id')),
+            bigquery.ScalarQueryParameter('created_at', 'TIMESTAMP', r.get('created_at')),
+            bigquery.ScalarQueryParameter('ended_at', 'TIMESTAMP', r.get('ended_at')),
+            bigquery.ScalarQueryParameter('duration_sec', 'FLOAT64', r.get('duration_sec')),
+            bigquery.ScalarQueryParameter('input_mode', 'STRING', r.get('input_mode')),
+            bigquery.ScalarQueryParameter('turns_total', 'INT64', r.get('turns_total', 0)),
+            bigquery.ScalarQueryParameter('turns_user', 'INT64', r.get('turns_user', 0)),
+            bigquery.ScalarQueryParameter('turns_assistant', 'INT64', r.get('turns_assistant', 0)),
+            bigquery.ScalarQueryParameter('user_chars', 'INT64', r.get('user_chars', 0)),
+            bigquery.ScalarQueryParameter('assistant_chars', 'INT64', r.get('assistant_chars', 0)),
+            bigquery.ScalarQueryParameter('user_words', 'INT64', r.get('user_words', 0)),
+            bigquery.ScalarQueryParameter('assistant_words', 'INT64', r.get('assistant_words', 0)),
+            bigquery.ScalarQueryParameter(
+                'user_tokens_approx', 'INT64', r.get('user_tokens_approx', 0)
+            ),
+            bigquery.ScalarQueryParameter(
+                'assistant_tokens_approx', 'INT64', r.get('assistant_tokens_approx', 0)
+            ),
+            bigquery.ScalarQueryParameter(
+                'resp_latency_avg_ms', 'FLOAT64', r.get('resp_latency_avg_ms')
+            ),
+            bigquery.ScalarQueryParameter(
+                'resp_latency_p95_ms', 'FLOAT64', r.get('resp_latency_p95_ms')
+            ),
+            bigquery.ScalarQueryParameter('errors', 'INT64', r.get('errors', 0)),
+            bigquery.ScalarQueryParameter('notes', 'STRING', r.get('notes')),
+        ]
 
-    # CSV export
+        query = f"""
+        INSERT INTO `{self.sessions_fq}`
+          (session_id, created_at, ended_at, duration_sec, input_mode,
+           turns_total, turns_user, turns_assistant,
+           user_chars, assistant_chars, user_words, assistant_words,
+           user_tokens_approx, assistant_tokens_approx,
+           resp_latency_avg_ms, resp_latency_p95_ms, errors, notes)
+        VALUES (
+          @session_id, @created_at, @ended_at, @duration_sec, @input_mode,
+          @turns_total, @turns_user, @turns_assistant,
+          @user_chars, @assistant_chars, @user_words, @assistant_words,
+          @user_tokens_approx, @assistant_tokens_approx,
+          @resp_latency_avg_ms, @resp_latency_p95_ms, @errors, @notes
+        )
+        """
+
+        job_config = bigquery.QueryJobConfig(query_parameters=params)
+        self.client.query(query, job_config=job_config).result()
+
     async def export_sessions_csv(self, csv_path: str) -> Path:
         return await asyncio.to_thread(self._export_sessions_csv_sync, csv_path)
-
-    async def export_turns_csv(self, csv_path: str, session_id: int | None = None) -> Path:
-        return await asyncio.to_thread(self._export_turns_csv_sync, csv_path, session_id)
-
-    # ---------- sync impl ----------
-
-    def _upsert_session_sync(self, r: dict[str, Any]) -> None:
-        cur = self._conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO sessions(
-                session_id, created_at, ended_at, duration_sec, input_mode,
-                turns_total, turns_user, turns_assistant,
-                user_chars, assistant_chars, user_words, assistant_words,
-                user_tokens_approx, assistant_tokens_approx,
-                resp_latency_avg_ms, resp_latency_p95_ms, errors, notes
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(session_id) DO UPDATE SET
-                created_at=excluded.created_at,
-                ended_at=excluded.ended_at,
-                duration_sec=excluded.duration_sec,
-                input_mode=excluded.input_mode,
-                turns_total=excluded.turns_total,
-                turns_user=excluded.turns_user,
-                turns_assistant=excluded.turns_assistant,
-                user_chars=excluded.user_chars,
-                assistant_chars=excluded.assistant_chars,
-                user_words=excluded.user_words,
-                assistant_words=excluded.assistant_words,
-                user_tokens_approx=excluded.user_tokens_approx,
-                assistant_tokens_approx=excluded.assistant_tokens_approx,
-                resp_latency_avg_ms=excluded.resp_latency_avg_ms,
-                resp_latency_p95_ms=excluded.resp_latency_p95_ms,
-                errors=excluded.errors,
-                notes=excluded.notes
-            """,
-            (
-                r.get('session_id'),
-                r.get('created_at'),
-                r.get('ended_at'),
-                r.get('duration_sec'),
-                r.get('input_mode'),
-                r.get('turns_total'),
-                r.get('turns_user'),
-                r.get('turns_assistant'),
-                r.get('user_chars'),
-                r.get('assistant_chars'),
-                r.get('user_words'),
-                r.get('assistant_words'),
-                r.get('user_tokens_approx'),
-                r.get('assistant_tokens_approx'),
-                r.get('resp_latency_avg_ms'),
-                r.get('resp_latency_p95_ms'),
-                r.get('errors', 0),
-                r.get('notes'),
-            ),
-        )
-        self._conn.commit()
-
-    def _insert_turns_sync(self, session_id: int, turns: list[dict[str, Any]]) -> None:
-        cur = self._conn.cursor()
-        cur.executemany(
-            """
-            INSERT INTO session_turns(
-                session_id, turn_index, role, text_chars, text_words, tokens_approx,
-                model, started_at, ended_at, latency_ms
-            ) VALUES (?,?,?,?,?,?,?,?,?,?)
-            """,
-            [
-                (
-                    session_id,
-                    t.get('turn_index'),
-                    t.get('role'),
-                    t.get('text_chars'),
-                    t.get('text_words'),
-                    t.get('tokens_approx'),
-                    t.get('model'),
-                    t.get('started_at'),
-                    t.get('ended_at'),
-                    t.get('latency_ms'),
-                )
-                for t in turns
-            ],
-        )
-        self._conn.commit()
 
     def _export_sessions_csv_sync(self, csv_path: str) -> Path:
         out = Path(csv_path)
         out.parent.mkdir(parents=True, exist_ok=True)
-        cur = self._conn.cursor()
-        cur.execute(
-            """
-            SELECT session_id, created_at, ended_at, duration_sec, input_mode,
-                   turns_total, turns_user, turns_assistant,
-                   user_chars, assistant_chars, user_words, assistant_words,
-                   user_tokens_approx, assistant_tokens_approx,
-                   resp_latency_avg_ms, resp_latency_p95_ms, errors, notes
-            FROM sessions
-            ORDER BY created_at DESC, session_id DESC
-            """
-        )
-        rows = cur.fetchall()
-        cols = [d[0] for d in cur.description]
-        with out.open('w', newline='', encoding='utf-8') as f:
-            w = csv.writer(f)
-            w.writerow(cols)
-            for r in rows:
-                w.writerow(r)
-        return out
 
-    def _export_turns_csv_sync(self, csv_path: str, session_id: int | None) -> Path:
-        out = Path(csv_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        cur = self._conn.cursor()
-        if session_id is None:
-            cur.execute(
-                """
-                SELECT session_id, turn_index, role, text_chars, text_words, tokens_approx,
-                       model, started_at, ended_at, latency_ms
-                FROM session_turns
-                ORDER BY session_id DESC, turn_index ASC, role ASC
-                """
-            )
-        else:
-            cur.execute(
-                """
-                SELECT session_id, turn_index, role, text_chars, text_words, tokens_approx,
-                       model, started_at, ended_at, latency_ms
-                FROM session_turns
-                WHERE session_id=?
-                ORDER BY turn_index ASC, role ASC
-                """,
-                (session_id,),
-            )
-        rows = cur.fetchall()
-        cols = [d[0] for d in cur.description]
+        query = f"""
+        SELECT session_id, created_at, ended_at, duration_sec, input_mode,
+               turns_total, turns_user, turns_assistant,
+               user_chars, assistant_chars, user_words, assistant_words,
+               user_tokens_approx, assistant_tokens_approx,
+               resp_latency_avg_ms, resp_latency_p95_ms, errors, notes
+        FROM `{self.sessions_fq}`
+        ORDER BY created_at DESC, session_id DESC
+        """
+        result = self.client.query(query).result()
+
+        cols = [
+            'session_id',
+            'created_at',
+            'ended_at',
+            'duration_sec',
+            'input_mode',
+            'turns_total',
+            'turns_user',
+            'turns_assistant',
+            'user_chars',
+            'assistant_chars',
+            'user_words',
+            'assistant_words',
+            'user_tokens_approx',
+            'assistant_tokens_approx',
+            'resp_latency_avg_ms',
+            'resp_latency_p95_ms',
+            'errors',
+            'notes',
+        ]
+
         with out.open('w', newline='', encoding='utf-8') as f:
-            w = csv.writer(f)
-            w.writerow(cols)
-            for r in rows:
-                w.writerow(r)
+            writer = csv.DictWriter(f, fieldnames=cols)
+            writer.writeheader()
+            for row in result:
+                writer.writerow(
+                    {
+                        'session_id': row.session_id,
+                        'created_at': row.created_at.isoformat() if row.created_at else None,
+                        'ended_at': row.ended_at.isoformat() if row.ended_at else None,
+                        'duration_sec': row.duration_sec,
+                        'input_mode': row.input_mode,
+                        'turns_total': row.turns_total,
+                        'turns_user': row.turns_user,
+                        'turns_assistant': row.turns_assistant,
+                        'user_chars': row.user_chars,
+                        'assistant_chars': row.assistant_chars,
+                        'user_words': row.user_words,
+                        'assistant_words': row.assistant_words,
+                        'user_tokens_approx': row.user_tokens_approx,
+                        'assistant_tokens_approx': row.assistant_tokens_approx,
+                        'resp_latency_avg_ms': row.resp_latency_avg_ms,
+                        'resp_latency_p95_ms': row.resp_latency_p95_ms,
+                        'errors': row.errors,
+                        'notes': row.notes,
+                    }
+                )
         return out

@@ -18,9 +18,10 @@ class AsyncLLMClient:
         Returns text chunks from the server.
         """
         response = await self.client.aio.models.generate_content(
-            model='gemini-2.5-flash', contents=prompt
+            model='gemini-2.5-flash',
+            contents=prompt,  # type: ignore[arg-type]
         )
-        return response.text
+        return response.text or ''
 
     async def text_to_speech(self, text: str) -> bytes:
         """
@@ -30,7 +31,7 @@ class AsyncLLMClient:
         response = await asyncio.to_thread(
             self.client.models.generate_content,
             model='gemini-2.5-flash-preview-tts',
-            contents=[text],
+            contents=[text],  # type: ignore[arg-type]
             config=types.GenerateContentConfig(
                 response_modalities=['AUDIO'],
                 speech_config=types.SpeechConfig(
@@ -42,11 +43,22 @@ class AsyncLLMClient:
                 ),
             ),
         )
-        return bytes(response.candidates[0].content.parts[0].inline_data.data)
+        # Add safety checks for None values
+        if (
+            response.candidates
+            and len(response.candidates) > 0
+            and response.candidates[0].content
+            and response.candidates[0].content.parts
+            and len(response.candidates[0].content.parts) > 0
+            and response.candidates[0].content.parts[0].inline_data
+            and response.candidates[0].content.parts[0].inline_data.data
+        ):
+            return bytes(response.candidates[0].content.parts[0].inline_data.data)
+        return b''
 
     async def transcribe_bytes(self, audio_bytes: bytes) -> str:
         # Send to LLM with audio transcription prompt
-        contents = [
+        contents: list[Any] = [
             'Transcribe this audio clip, it will be in french. Do not any additonal comments.',
             types.Part.from_bytes(
                 data=audio_bytes,
@@ -55,7 +67,7 @@ class AsyncLLMClient:
         ]
 
         # Collect response
-        transcription = await self.send_request(contents)
+        transcription = await self.send_request(contents)  # type: ignore[arg-type]
         return transcription.strip()
 
     async def close(self) -> None:

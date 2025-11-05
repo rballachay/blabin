@@ -175,18 +175,26 @@ async def main() -> None:
     audio_file = args.audio_file
     input_mode = 'audio' if (not use_text_mode and audio_file) else 'text'
 
+    # ingest env variables for BigQuery tables
+    gcp_project_id = os.getenv('GCP_PROJECT_ID')
+
+    if not gcp_project_id:
+        raise RuntimeError('GCP_PROJECT_ID not set in environment variables')
+
+    environment = os.getenv('ENVIRONMENT', 'development')
+
     # update news sources for discussion
-    news_store = NewsStore('data/news.db')
+    news_store = NewsStore(project=gcp_project_id, dataset=environment)
     await refresh_context(news_store)
 
     # LLM + services
     gemini_key = os.getenv('GEMINI_API_KEY', '')
     llm_client = AsyncLLMClient(api_key=gemini_key)
-    voice_identifier = VoiceIdentifier(db_path='data/speakers.db', confidence=0.5)
+    voice_identifier = VoiceIdentifier(project=gcp_project_id, dataset=environment, confidence=0.5)
 
     # handles prompts + session data
     prompt_manager = PromptManager()
-    session_store = SessionStore('data/sessions.db')
+    session_store = SessionStore(project=gcp_project_id, dataset=environment)
 
     agent = ConversationAgent(
         api_key=gemini_key,
@@ -217,7 +225,7 @@ async def main() -> None:
     output_processor = AudioOutputProcessor() if SPEAK_OUTPUT else TextOutputProcessor()
 
     # Mistake store + session
-    mistake_store = MistakeStore('data/mistakes.db')
+    mistake_store = MistakeStore(project=gcp_project_id, dataset=environment)
     session_id = int(time.time() / 1000)
 
     runner = ConversationRunner(

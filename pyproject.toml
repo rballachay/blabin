@@ -49,7 +49,8 @@ dev = [
     "pre-commit",
     "types-requests",          # If using httpx
     "pytest_asyncio",
-    "types-pyyaml"
+    "types-pyyaml",
+    "types-protobuf"
     # Add other dev dependencies here if needed
 ]
 

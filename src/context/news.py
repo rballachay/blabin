@@ -95,11 +95,16 @@ class NewsScraper:
         # Fallbacks if very short
         if not parts or sum(len(x) for x in parts) < 200:
             og_desc = soup.select_one('meta[property="og:description"]')
-            if og_desc and og_desc.get('content'):
-                parts.append(og_desc['content'].strip())
+            if og_desc:
+                content = og_desc.get('content')
+                if isinstance(content, str):
+                    parts.append(content.strip())
+
             meta_desc = soup.select_one('meta[name=description]')
-            if meta_desc and meta_desc.get('content'):
-                parts.append(meta_desc['content'].strip())
+            if meta_desc:
+                content = meta_desc.get('content')
+                if isinstance(content, str):
+                    parts.append(content.strip())
 
         # Deduplicate adjacent lines and join
         cleaned: list[str] = []

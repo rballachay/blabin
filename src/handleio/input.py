@@ -33,9 +33,9 @@ class InputProcessor(Protocol):
 
 
 def _segment_to_wav_bytes(segment: np.ndarray, sr: int = TARGET_SR) -> bytes:
-    seg = np.asarray(segment, dtype=np.float32).ravel()
+    seg: np.ndarray = np.asarray(segment, dtype=np.float32).ravel()
     seg = np.clip(seg, -1.0, 1.0)
-    pcm16 = (seg * 32767.0).astype('<i2', copy=False)
+    pcm16: np.ndarray = (seg * 32767.0).astype('<i2', copy=False)
     buf = io.BytesIO()
     with wave.open(buf, 'wb') as wf:
         wf.setnchannels(1)
@@ -59,8 +59,7 @@ class AudioInputProcessor:
             self._aiter = self.vad.detect_from_file(self.audio_file).__aiter__()
         while True:
             try:
-                segment = await self._aiter.__anext__()
-                print(segment.shape)
+                segment: np.ndarray = await self._aiter.__anext__()
             except StopAsyncIteration:
                 break
 

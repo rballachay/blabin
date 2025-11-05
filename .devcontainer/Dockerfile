@@ -39,8 +39,22 @@ RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.
 RUN apt-get update \
     && apt-get install -y google-cloud-cli
 
+# Make the version configurable
+# https://github.com/hashicorp/terraform/releases
+ARG TERRAFORM_VERSION=1.13.5
+
+# Install Terraform as root user
+RUN curl -fsSL https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip -o /tmp/terraform.zip \
+  && unzip /tmp/terraform.zip -d /tmp \
+  && mv /tmp/terraform /usr/local/bin/ \
+  && rm -rf /tmp/* \
+  && terraform version
+
 # Switch to non-root user
 USER $USERNAME
+
+# Install auto-completions for non-root user
+RUN terraform -install-autocomplete
 
 # Install uv for the user
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh

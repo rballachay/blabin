@@ -310,11 +310,18 @@ class ConversationAgent:
             if isinstance(ai, AIMessage) and getattr(ai, 'tool_calls', None):
                 return {'lc_messages': lc_messages}
 
-            # check if output is list or a string
+            # Check if output is list or a string
             if isinstance(ai.content, str):
-                out_text = str(ai.content).strip()
+                out_text = ai.content.strip()
+            elif isinstance(ai.content, list) and len(ai.content) > 0:
+                # Handle list content - get first element
+                first_item = ai.content[0]
+                if isinstance(first_item, dict) and 'text' in first_item:
+                    out_text = str(first_item['text']).strip()
+                else:
+                    out_text = str(first_item).strip()
             else:
-                out_text = str(ai.content[0]['text']).strip()
+                out_text = str(ai.content).strip()
 
             # Otherwise finalize: take content as the assistant reply
             new_hist = list(state.get('history', []))

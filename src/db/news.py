@@ -2,85 +2,159 @@ from __future__ import annotations
 
 import asyncio
 import csv
-import sqlite3
-from collections.abc import Iterable
-from dataclasses import dataclass
-from datetime import datetime, timezone
+import os
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
-
-@dataclass(frozen=True)
-class ArticleRow:
-    id: int
-    source: str
-    title: str
-    link: str
-    published: str | None
-    text: str
-    fetched_at: str
+from google.cloud import bigquery
+from google.cloud.bigquery import DatasetReference
 
 
 class NewsStore:
-    def __init__(self, db_path: str = 'data/news.db') -> None:
-        self.path = Path(db_path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
-        self._conn.execute('PRAGMA journal_mode=WAL;')
-        self._conn.execute('PRAGMA synchronous=NORMAL;')
-        self._conn.execute('PRAGMA foreign_keys=ON;')
-        self._init_schema()
+    """BigQuery-backed news article store."""
 
-    def _init_schema(self) -> None:
-        cur = self._conn.cursor()
-        cur.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS articles (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              source TEXT NOT NULL,
-              title TEXT NOT NULL,
-              link TEXT NOT NULL UNIQUE,
-              published TEXT,
-              text TEXT NOT NULL,
-              fetched_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_articles_source ON articles(source);
-            CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published);
-            CREATE INDEX IF NOT EXISTS idx_articles_fetched ON articles(fetched_at);
-            """
-        )
-        self._conn.commit()
+    TABLE_DDL = """
+    CREATE TABLE IF NOT EXISTS `{table_fq}` (
+      id INT64,
+      source STRING NOT NULL,
+      title STRING NOT NULL,
+      link STRING NOT NULL,
+      published TIMESTAMP,
+      text STRING NOT NULL,
+      fetched_at TIMESTAMP NOT NULL
+    )
+    PARTITION BY DATE(fetched_at)
+    CLUSTER BY source, link
+    """
+
+    def __init__(
+        self,
+        project: str,
+        dataset: str,
+        table: str = 'articles',
+    ) -> None:
+        self.project = project
+        self.dataset = dataset
+        self.table = table
+
+        self.client = bigquery.Client()
+        self.dataset_fq = f'{self.project}.{self.dataset}'
+        self.table_fq = f'{self.dataset_fq}.{self.table}'
+
+        # Ensure dataset and table exist
+        self._ensure_dataset()
+        self._ensure_table()
+
+    def _ensure_dataset(self) -> None:
+        dataset_ref = DatasetReference(self.project, self.dataset)
+        try:
+            self.client.get_dataset(dataset_ref)
+        except Exception:
+            dataset = bigquery.Dataset(self.dataset_fq)
+            dataset.location = os.getenv('BIGQUERY_LOCATION', 'US')
+            self.client.create_dataset(dataset, exists_ok=True)
+
+    def _ensure_table(self) -> None:
+        """Create table if it doesn't exist using embedded DDL."""
+        ddl = self.TABLE_DDL.format(table_fq=self.table_fq)
+        self.client.query(ddl).result()
 
     async def close(self) -> None:
-        await asyncio.to_thread(self._conn.close)
+        await asyncio.to_thread(self.client.close)
 
-    async def upsert_articles(self, source: str, rows: Iterable[dict[str, Any]]) -> None:
-        await asyncio.to_thread(self._upsert_articles_sync, source, list(rows))
+    async def upsert_articles(self, source: str, rows: list[dict[str, Any]]) -> None:
+        """
+        Insert articles using streaming inserts (append-only).
+        For true deduplication, use MERGE in a batch job (not implemented here).
+        """
+        if not rows:
+            return
+        await asyncio.to_thread(self._insert_articles_sync, source, rows)
 
-    def _upsert_articles_sync(self, source: str, rows: list[dict[str, Any]]) -> None:
-        cur = self._conn.cursor()
-        for r in rows:
-            cur.execute(
-                """
-                INSERT INTO articles(source, title, link, published, text, fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(link) DO UPDATE SET
-                  source=excluded.source,
-                  title=excluded.title,
-                  published=COALESCE(excluded.published, articles.published),
-                  text=excluded.text,
-                  fetched_at=excluded.fetched_at
-                """,
-                (
-                    source,
-                    r.get('title', ''),
-                    r.get('link', ''),
-                    r.get('published'),
-                    r.get('text', ''),
-                    r.get('fetched_at', ''),
-                ),
-            )
-        self._conn.commit()
+    def _insert_articles_sync(self, source: str, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+
+        # Use parameterized queries to avoid escaping issues
+        batch_size = 100
+        for i in range(0, len(rows), batch_size):
+            batch = rows[i : i + batch_size]
+
+            # Build INSERT with parameterized VALUES
+            params = []
+            value_placeholders = []
+
+            for idx, r in enumerate(batch):
+                article_id = abs(hash(r.get('link', ''))) % (10**15)
+
+                # Convert timestamp formats to ISO 8601
+                published = self._parse_timestamp(r.get('published'))
+                fetched_at = self._parse_timestamp(r.get('fetched_at'))
+
+                text = r.get('text', '')
+                if isinstance(text, str):
+                    text = text.strip()
+
+                title = r.get('title', '')
+                if isinstance(title, str):
+                    title = title.strip()
+
+                params.extend(
+                    [
+                        bigquery.ScalarQueryParameter(f'id_{idx}', 'INT64', article_id),
+                        bigquery.ScalarQueryParameter(f'source_{idx}', 'STRING', source),
+                        bigquery.ScalarQueryParameter(f'title_{idx}', 'STRING', title),
+                        bigquery.ScalarQueryParameter(
+                            f'link_{idx}', 'STRING', r.get('link', '') or ''
+                        ),
+                        bigquery.ScalarQueryParameter(f'published_{idx}', 'TIMESTAMP', published),
+                        bigquery.ScalarQueryParameter(f'text_{idx}', 'STRING', text),
+                        bigquery.ScalarQueryParameter(f'fetched_{idx}', 'TIMESTAMP', fetched_at),
+                    ]
+                )
+
+                value_placeholders.append(
+                    f'(@id_{idx}, @source_{idx}, @title_{idx}, @link_{idx}, @published_{idx}, @text_{idx}, @fetched_{idx})'
+                )
+
+            values_clause = ',\n  '.join(value_placeholders)
+
+            query = f"""
+            INSERT INTO `{self.table_fq}`
+              (id, source, title, link, published, text, fetched_at)
+            VALUES
+              {values_clause}
+            """
+
+            job_config = bigquery.QueryJobConfig(query_parameters=params)
+            self.client.query(query, job_config=job_config).result()
+
+    @staticmethod
+    def _parse_timestamp(ts: str | None) -> str | None:
+        """
+        Parse various timestamp formats and convert to ISO 8601.
+        Handles: RFC 2822, ISO 8601, etc.
+        """
+        if not ts:
+            return None
+
+        try:
+            # Try parsing as RFC 2822 (RSS feed format)
+            dt = parsedate_to_datetime(ts)
+            return dt.isoformat()
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            # Try parsing as ISO 8601
+            dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+            return dt.isoformat()
+        except (TypeError, ValueError):
+            pass
+        # Return None if unparseable
+        return None
 
     async def recent_titles(
         self, limit: int = 5, source: str | None = None
@@ -88,30 +162,33 @@ class NewsStore:
         return await asyncio.to_thread(self._recent_titles_sync, limit, source)
 
     def _recent_titles_sync(self, limit: int, source: str | None) -> list[dict[str, Any]]:
-        cur = self._conn.cursor()
+        where = ''
+        params = []
         if source:
-            cur.execute(
-                """
-                SELECT id, title, link, published FROM articles
-                WHERE source = ?
-                ORDER BY COALESCE(published, fetched_at) DESC, id DESC
-                LIMIT ?
-                """,
-                (source, limit),
-            )
-        else:
-            cur.execute(
-                """
-                SELECT id, title, link, published FROM articles
-                ORDER BY COALESCE(published, fetched_at) DESC, id DESC
-                LIMIT ?
-                """,
-                (limit,),
-            )
-        out: list[dict[str, Any]] = []
-        for row in cur.fetchall():
+            where = 'WHERE source = @source'
+            params.append(bigquery.ScalarQueryParameter('source', 'STRING', source))
+
+        query = f"""
+        SELECT id, title, link, published
+        FROM `{self.table_fq}`
+        {where}
+        ORDER BY COALESCE(published, fetched_at) DESC, id DESC
+        LIMIT @limit
+        """
+        params.append(bigquery.ScalarQueryParameter('limit', 'INT64', limit))
+
+        job_config = bigquery.QueryJobConfig(query_parameters=params)
+        result = self.client.query(query, job_config=job_config).result()
+
+        out = []
+        for row in result:
             out.append(
-                {'id': int(row[0]), 'title': str(row[1]), 'link': str(row[2]), 'published': row[3]}
+                {
+                    'id': row.id,
+                    'title': row.title,
+                    'link': row.link,
+                    'published': row.published.isoformat() if row.published else None,
+                }
             )
         return out
 
@@ -119,95 +196,94 @@ class NewsStore:
         return await asyncio.to_thread(self._get_article_sync, article_id)
 
     def _get_article_sync(self, article_id: int) -> dict[str, Any]:
-        cur = self._conn.cursor()
-        row = cur.execute(
-            'SELECT id, source, title, link, published, text, fetched_at FROM articles WHERE id = ?',
-            (article_id,),
-        ).fetchone()
+        query = f"""
+        SELECT id, source, title, link, published, text, fetched_at
+        FROM `{self.table_fq}`
+        WHERE id = @article_id
+        LIMIT 1
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[bigquery.ScalarQueryParameter('article_id', 'INT64', article_id)]
+        )
+        rows = list(self.client.query(query, job_config=job_config).result())
+        if not rows:
+            return {}
+        row = rows[0]
         return {
-            'id': int(row[0]),
-            'source': str(row[1]),
-            'title': str(row[2]),
-            'link': str(row[3]),
-            'published': row[4],
-            'text': str(row[5]),
-            'fetched_at': str(row[6]),
+            'id': row.id,
+            'source': row.source,
+            'title': row.title,
+            'link': row.link,
+            'published': row.published.isoformat() if row.published else None,
+            'text': row.text,
+            'fetched_at': row.fetched_at.isoformat() if row.fetched_at else None,
         }
 
     async def last_fetch(self, source: str | None = None) -> datetime | None:
         return await asyncio.to_thread(self._last_fetch_sync, source)
 
     def _last_fetch_sync(self, source: str | None) -> datetime | None:
-        cur = self._conn.cursor()
+        where = ''
+        params = []
         if source:
-            row = cur.execute(
-                'SELECT MAX(fetched_at) FROM articles WHERE source = ?', (source,)
-            ).fetchone()
-        else:
-            row = cur.execute('SELECT MAX(fetched_at) FROM articles').fetchone()
-        s = row[0] if row else None
-        if not s:
+            where = 'WHERE source = @source'
+            params.append(bigquery.ScalarQueryParameter('source', 'STRING', source))
+
+        query = f"""
+        SELECT MAX(fetched_at) as max_fetched
+        FROM `{self.table_fq}`
+        {where}
+        """
+        job_config = bigquery.QueryJobConfig(query_parameters=params)
+        rows = list(self.client.query(query, job_config=job_config).result())
+        if not rows or not rows[0].max_fetched:
             return None
-        # fetched_at is stored as UTC like 2025-11-02T13:45:00Z
-        try:
-            return datetime.strptime(s, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
-        except Exception:
-            try:
-                # fallback for ISO without Z
-                return datetime.fromisoformat(s)
-            except Exception:
-                return None
+        return rows[0].max_fetched
 
     async def export_news_csv(
-        self,
-        csv_path: str,
-        source: str | None = None,
-        limit: int | None = None,
+        self, csv_path: str, source: str | None = None, limit: int | None = None
     ) -> Path:
-        """
-        Export articles to CSV. Optionally filter by source and/or limit row count.
-        Columns: id, source, title, link, published, fetched_at, text
-        """
         return await asyncio.to_thread(self._export_news_csv_sync, csv_path, source, limit)
 
-    def _export_news_csv_sync(
-        self,
-        csv_path: str,
-        source: str | None,
-        limit: int | None,
-    ) -> Path:
+    def _export_news_csv_sync(self, csv_path: str, source: str | None, limit: int | None) -> Path:
         out = Path(csv_path)
         out.parent.mkdir(parents=True, exist_ok=True)
 
-        cols = ['id', 'source', 'title', 'link', 'published', 'fetched_at', 'text']
-
         where = ''
-        args: list[Any] = []
+        params = []
         if source:
-            where = 'WHERE source = ?'
-            args.append(source)
+            where = 'WHERE source = @source'
+            params.append(bigquery.ScalarQueryParameter('source', 'STRING', source))
 
-        order = 'ORDER BY COALESCE(published, fetched_at) DESC, id DESC'
         lim = ''
-        if isinstance(limit, int) and limit > 0:
-            lim = 'LIMIT ?'
-            args.append(limit)
+        if limit:
+            lim = 'LIMIT @limit'
+            params.append(bigquery.ScalarQueryParameter('limit', 'INT64', limit))
 
-        sql = f"""
+        query = f"""
         SELECT id, source, title, link, published, fetched_at, text
-        FROM articles
+        FROM `{self.table_fq}`
         {where}
-        {order}
+        ORDER BY COALESCE(published, fetched_at) DESC, id DESC
         {lim}
         """
-        cur = self._conn.cursor()
-        cur.execute(sql, tuple(args))
+        job_config = bigquery.QueryJobConfig(query_parameters=params)
+        result = self.client.query(query, job_config=job_config).result()
 
+        cols = ['id', 'source', 'title', 'link', 'published', 'fetched_at', 'text']
         with out.open('w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=cols, extrasaction='ignore')
+            writer = csv.DictWriter(f, fieldnames=cols)
             writer.writeheader()
-            for row in cur.fetchall():
-                record = {k: row[i] for i, k in enumerate(cols)}
-                writer.writerow(record)
-
+            for row in result:
+                writer.writerow(
+                    {
+                        'id': row.id,
+                        'source': row.source,
+                        'title': row.title,
+                        'link': row.link,
+                        'published': row.published.isoformat() if row.published else None,
+                        'fetched_at': row.fetched_at.isoformat() if row.fetched_at else None,
+                        'text': row.text,
+                    }
+                )
         return out

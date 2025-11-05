@@ -82,7 +82,17 @@ class PromptManager:
             run_0 = runs[0]
 
             if isinstance(run_0, Run):
-                run_id = run_0.run_id
+                # Use info.run_id instead of run_id
+                run_id = run_0.info.run_id
+            else:
+                # Fallback if it's a DataFrame row
+                run_id = str(run_0.get('run_id', ''))
+        else:
+            # If runs is a DataFrame
+            if runs.empty:
+                return None
+            run_id = str(runs.iloc[0]['run_id'])
+
         try:
             bpath = self.client.download_artifacts(run_id, f'prompts/{name}.yaml')
             return yaml.safe_load(Path(bpath).read_text(encoding='utf-8'))

@@ -187,18 +187,18 @@ class AsyncVAD:
             input_device_index=input_device_index,
         )
         try:
-            pending = np.empty((0,), dtype=np.float32)
+            pending: np.ndarray = np.empty((0,), dtype=np.float32)
             running = True
             while running:
                 # read blocking call in thread
                 data = await asyncio.to_thread(stream.read, chunk_size, False)
                 # bytes -> int16
                 arr = np.frombuffer(data, dtype=np.int16)
-                float_arr = int2float(arr)
+                float_arr: np.ndarray = int2float(arr)
                 # resample to target_sr if needed
                 if sample_rate != self.target_sr:
                     float_arr = await asyncio.to_thread(
-                        librosa.resample, float_arr, sample_rate, self.target_sr
+                        librosa.resample, float_arr, orig_sr=sample_rate, target_sr=self.target_sr
                     )
                 # accumulate pending and split into frames
                 pending = np.concatenate((pending, float_arr))
