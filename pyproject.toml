@@ -2,7 +2,7 @@
 name = "blabin" # Renamed
 version = "0.1.0"
 description = "A basic agent for language learning." # Updated
-authors = [{ name = "Your Name", email = "your.email@example.com" }] # UPDATE THIS
+authors = [{ name = "Riley Ballachay", email = "riley.ballachay@gmail.com" }]
 requires-python = ">=3.10"
 readme = "README.md"
 license = { text = "MIT" }
@@ -35,7 +35,8 @@ dependencies = [
     "mlflow>=3.5.1",
     "resemblyzer>=0.1.4",
     "feedparser>=6.0.12",
-    "bs4>=0.0.2"
+    "bs4>=0.0.2",
+    "google-cloud-bigquery>=3.38.0"
 ]
 
 [project.optional-dependencies]

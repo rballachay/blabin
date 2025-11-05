@@ -26,12 +26,7 @@
           }
         }
       }
-    },
-    "postCreateCommand": "uv sync && pip install .[dev] && pre-commit install",
-    "remoteUser": "vscode",
-    "runArgs": [
-            "--device=/dev/snd:/dev/snd"
-    ],
-     "postStartCommand": "bash -lc 'chmod +x /workspaces/blabin/start-mlflow.sh && /workspaces/blabin/start-mlflow.sh || true'"
-
-  }
+  },
+  "postCreateCommand": "uv sync && pip install .[dev]",
+  "remoteUser": "vscode"
+}
