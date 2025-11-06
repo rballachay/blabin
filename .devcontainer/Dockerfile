@@ -30,6 +30,7 @@ RUN groupadd --gid $USER_GID $USERNAME \
     &&  apt-get -y install portaudio19-dev \
     && apt install -y python3-pyaudio \
     && apt install -y unzip \
+    && apt install -y pulseaudio-utils \
     && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME
 
@@ -60,6 +61,9 @@ RUN terraform -install-autocomplete
 
 # Install uv for the user
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# connect docker to audio
+ENV PULSE_SERVER=docker.for.mac.localhost:4713
 
 # Add user's .local/bin to path for uv
 ENV PATH="/home/$USERNAME/.local/bin:${PATH}"

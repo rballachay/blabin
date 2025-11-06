@@ -14,7 +14,7 @@ fi
 REGION="${GCP_REGION:-us-central1}"
 SERVICE="${SERVICE:-mlflow}"
 
-gcloud config set project "${GCP_PROJECT_ID:?Set GCP_PROJECT_ID in .env or env}"
+gcloud config set project "${GOOGLE_CLOUD_PROJECT:?Set GOOGLE_CLOUD_PROJECT in .env or env}"
 
 # Start local proxy (injects auth), then open in browser
 PORT="${PORT:-8081}"

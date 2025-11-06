@@ -248,13 +248,22 @@ class ConversationAgent:
                     'conversation_started': True,
                 }
 
-            state['system_prompt'] = (
-                " At the end of your response, mention you don't know them, and need to ask their name."
-            )
-            state['current_speaker'] = 'unknown'
-            response = await generate_response(state)
+            msgs = [
+                {
+                    'role': 'system',
+                    'content': state['system_prompt']
+                    + "\nAt the end of your response, mention you don't know them, and need to ask their name.",
+                },
+                {'role': 'user', 'content': user_text},
+            ]
+            ai = await self.llm.ainvoke(msgs)
+            if isinstance(ai.content, str):
+                out_text = ai.content.strip()
+            else:
+                out_text = str(ai.content).strip()
+
             return {
-                'response': response['response'],
+                'response': out_text,
                 'conversation_started': True,
             }
 

@@ -1,5 +1,7 @@
 import asyncio
 import io
+import subprocess
+import tempfile
 import wave
 from typing import Protocol
 
@@ -34,29 +36,43 @@ class AudioOutputProcessor:
     Falls back to stdout when speak_allowed=False.
     """
 
-    def __init__(self) -> None:
-        self._pa = pyaudio.PyAudio()
+    def __init__(self, use_pulse: bool = True) -> None:
+        if not use_pulse:
+            self._pa = pyaudio.PyAudio()
+        else:
+            self._pa = None
         self._stream = None
+
+        self.use_pulse = use_pulse
 
     async def _play_wav_bytes(self, audio_bytes: bytes) -> None:
         wav_io = io.BytesIO(audio_bytes)
         with wave.open(wav_io, 'rb') as wave_file:
-            self._stream = self._pa.open(
-                format=self._pa.get_format_from_width(wave_file.getsampwidth()),
-                channels=wave_file.getnchannels(),
-                rate=wave_file.getframerate(),
-                output=True,
-            )
-            chunk_size = 1024
-            data = wave_file.readframes(chunk_size)
-            while data:
-                if self._stream is not None:
-                    await asyncio.to_thread(self._stream.write, data)
+            if self._pa:
+                self._stream = self._pa.open(
+                    format=self._pa.get_format_from_width(wave_file.getsampwidth()),
+                    channels=wave_file.getnchannels(),
+                    rate=wave_file.getframerate(),
+                    output=True,
+                )
+                chunk_size = 1024
                 data = wave_file.readframes(chunk_size)
+                while data:
+                    if self._stream is not None:
+                        await asyncio.to_thread(self._stream.write, data)
+                    data = wave_file.readframes(chunk_size)
         if self._stream:
             self._stream.stop_stream()
             self._stream.close()
             self._stream = None
+
+    async def _play_wav_bytes_pulse(self, audio_bytes: bytes) -> None:
+        if not audio_bytes or audio_bytes[:4] != b'RIFF':
+            return
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=True) as tmp:
+            tmp.write(audio_bytes)
+            tmp.flush()
+            subprocess.run(['paplay', tmp.name], check=False)
 
     async def output(
         self, text: str, llm_client: AsyncLLMClient, speak_allowed: bool = True
@@ -67,7 +83,11 @@ class AudioOutputProcessor:
             print(f'Agent: {text}\n')
             return
         audio_bytes = await llm_client.text_to_speech(text)
-        await self._play_wav_bytes(audio_bytes)
+
+        if self.use_pulse:
+            await self._play_wav_bytes_pulse(audio_bytes)
+        else:
+            await self._play_wav_bytes(audio_bytes)
 
     async def aclose(self) -> None:
         # Ensure stream/device closed
@@ -75,4 +95,5 @@ class AudioOutputProcessor:
             self._stream.stop_stream()
             self._stream.close()
             self._stream = None
-        self._pa.terminate()
+        if self._pa:
+            self._pa.terminate()

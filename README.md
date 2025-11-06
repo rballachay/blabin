@@ -67,3 +67,18 @@ python -m src.main --chat
 
 ## Notes
 - If you see BigQuery permission errors, ensure ADC is set and the selected project matches your `.env` (GOOGLE_CLOUD_PROJECT).
+
+## macOS audio (PulseAudio bridge)
+For container audio output on macOS:
+```sh
+# Install PulseAudio
+brew install pulseaudio
+
+# Start (TCP accessible) daemon
+pulseaudio --kill || true
+pulseaudio -D --exit-idle-time=-1 \
+  --load="module-native-protocol-tcp listen=0.0.0.0 port=4713 auth-anonymous=1"
+
+# Verify it is running
+ps aux | grep pulseaudio | grep -v grep
+lsof -iTCP:4713 -sTCP:LISTEN
