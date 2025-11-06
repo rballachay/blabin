@@ -166,7 +166,7 @@ async def build_mistake_records(
     language: str = 'fr',
     prompt_name: str = 'mistakes_v1',
     prompt_version: str | None = None,
-    prompt_local_only: bool = False,
+    prompt_local_only: bool = True,
     max_chars: int = 16000,
 ) -> list[MistakeRecord]:
     """
@@ -270,7 +270,7 @@ class MistakeAnalyzer:
         language: str = 'fr',
         prompt_name: str = 'mistakes_v1',
         prompt_version: str | None = None,
-        prompt_local_only: bool = False,
+        prompt_local_only: bool = True,
     ) -> None:
         self.llm = llm
         self.max_records = max_records
@@ -383,29 +383,27 @@ async def analyze_session(
     mistakes_prompt_version: str | None = None,
     levels_prompt_name: str = 'levels_v1',
     levels_prompt_version: str | None = None,
-    prompt_local_only: bool = False,
+    prompt_local_only: bool = True,
 ) -> dict[str, Any]:
     """
     High-level helper to be called at session end.
     Returns { 'records', 'counts', 'level' }.
     """
-    # 1) Mistake records for the whole session
-    records = await build_mistake_records(
-        history,
+    # Use MistakeAnalyzer for records/counts
+    analyzer = MistakeAnalyzer(
         llm=llm,
         prompt_manager=prompt_manager,
         max_records=max_records,
         language=language,
         prompt_name=mistakes_prompt_name,
-        prompt_version=m_istakes_prompt_version
-        if (m_istakes_prompt_version := mistakes_prompt_version)
-        else None,
+        prompt_version=mistakes_prompt_version,
         prompt_local_only=prompt_local_only,
     )
-    counts = Counter(r.mistake_type or 'other-grammar' for r in records)
-    counts_list = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    res = await analyzer.analyze(history)
+    records_dicts = res.get('records', [])
+    counts_list = res.get('counts', [])
 
-    # 2) Session-level CEFR estimate from all user turns
+    # Session-level CEFR estimate from all user turns
     user_texts = [
         m['content']
         for m in (history or [])
@@ -432,7 +430,7 @@ async def analyze_session(
             }
 
     return {
-        'records': [r.to_dict() for r in records],
+        'records': records_dicts,
         'counts': counts_list,
         'level': level_dict,
     }

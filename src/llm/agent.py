@@ -162,6 +162,10 @@ class ConversationAgent:
             # If user provides a name directly (text), accept it and greet contextually
             provided = await self.conversation_service.get_speaker_name(user_text)
             if provided and provided != 'unknown':
+                try:
+                    self.voice_identifier.ensure_exists(provided)
+                except Exception:
+                    pass
                 greet = await self.conversation_service.make_greeting(
                     user_text, provided, returning=False
                 )
@@ -174,12 +178,14 @@ class ConversationAgent:
                 }
 
             # Otherwise classify as yes/no
-            try:
-                decision = await self.conversation_service.is_confirmation(user_text)
-            except Exception:
-                decision = False
+            decision = await self.conversation_service.is_confirmation(user_text)
 
+            # ...existing yes/no branch...
             if decision and proposed:
+                try:
+                    self.voice_identifier.ensure_exists(proposed)
+                except Exception:
+                    pass
                 greet = await self.conversation_service.make_greeting(
                     user_text, proposed, returning=True
                 )
@@ -232,6 +238,7 @@ class ConversationAgent:
 
             extracted = await self.conversation_service.get_speaker_name(user_text)
             if extracted != 'unknown':
+                self.voice_identifier.ensure_exists(extracted)
                 greet = await self.conversation_service.make_greeting(
                     user_text, extracted, returning=False
                 )

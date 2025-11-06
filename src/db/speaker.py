@@ -73,6 +73,16 @@ class VoiceIdentifier:
         else:
             return 'unknown', score
 
+    def ensure_exists(self, name: str) -> bool:
+        """
+        Ensure a speaker row exists even without audio (stores empty embedding).
+        Returns True if created, False if already existed.
+        """
+        if self.db.name_exists(name):
+            return False
+        self.db.add_speaker(name, None, sample_count=0)
+        return True
+
 
 class SpeakerDB:
     """BigQuery-backed speaker database."""
@@ -113,9 +123,18 @@ class SpeakerDB:
     @staticmethod
     def _deserialize_embedding(s: str) -> np.ndarray:
         """Deserialize JSON string back to numpy array."""
-        return np.array(json.loads(s), dtype=np.float32)
+        try:
+            return np.array(json.loads(s), dtype=np.float32)
+        except Exception:
+            return np.array([], dtype=np.float32)
 
-    def add_speaker(self, name: str, voice_signature: np.ndarray | str) -> int:
+    def add_speaker(
+        self, name: str, voice_signature: np.ndarray | str | None, *, sample_count: int = 1
+    ) -> int:
+        """
+        Insert a new speaker. If voice_signature is None, store an empty JSON array ('[]')
+        and set sample_count accordingly (e.g., 0).
+        """
         now = datetime.now(timezone.utc).isoformat()
 
         if isinstance(voice_signature, np.ndarray):
@@ -124,6 +143,8 @@ class SpeakerDB:
             if norm > 0:
                 vec = vec / norm
             serialized = self._serialize_embedding(vec)
+        elif voice_signature is None:
+            serialized = '[]'
         else:
             serialized = str(voice_signature)
 
@@ -137,7 +158,7 @@ class SpeakerDB:
             bigquery.ScalarQueryParameter('last_seen', 'TIMESTAMP', now),
             bigquery.ScalarQueryParameter('voice_signature', 'STRING', serialized),
             bigquery.ScalarQueryParameter('language_level', 'STRING', 'beginner'),
-            bigquery.ScalarQueryParameter('sample_count', 'INT64', 1),
+            bigquery.ScalarQueryParameter('sample_count', 'INT64', int(sample_count)),
         ]
 
         query = f"""
@@ -188,11 +209,6 @@ class SpeakerDB:
     def update_embedding_incremental(
         self, speaker_id: int, new_emb: np.ndarray, weight: float = 1.0
     ) -> None:
-        """
-        Update stored embedding using weighted incremental mean.
-        Note: This requires MERGE or UPDATE, not streaming insert.
-        For now, we'll use a MERGE query.
-        """
         row = self._get_speaker_row(speaker_id)
         if not row:
             raise ValueError('speaker_id not found')
@@ -204,8 +220,16 @@ class SpeakerDB:
         old_vec = np.asarray(old_emb, dtype=np.float32).ravel()
         new_vec = np.asarray(new_emb, dtype=np.float32).ravel()
 
-        total = old_count + float(weight)
-        mean = (old_vec * old_count + new_vec * float(weight)) / total
+        if new_vec.size == 0:
+            return  # nothing to update
+
+        # If no prior embedding or count was zero, take new vector as mean
+        if old_vec.size == 0 or old_count <= 0:
+            mean = new_vec.astype(np.float32)
+            total = float(weight)
+        else:
+            total = old_count + float(weight)
+            mean = (old_vec * old_count + new_vec * float(weight)) / total
 
         n = np.linalg.norm(mean)
         if n > 0:

@@ -32,6 +32,18 @@ SPEAK_OUTPUT = False
 # Load environment variables
 load_dotenv()
 
+# attempt to set up mlflow autolog
+MLFLOW_URI_LOCAL = os.getenv('MLFLOW_URI_LOCAL')
+MLFLOW_EXPERIMENT = os.getenv('MLFLOW_EXPERIMENT', 'blabin-development')
+if not MLFLOW_URI_LOCAL:
+    logging.warning(
+        'MLflow disabled: set MLFLOW_TRACKING_URI in .env (see terraform/mlflow/README.md).'
+    )
+else:
+    mlflow.set_tracking_uri(MLFLOW_URI_LOCAL)
+    mlflow.set_experiment(MLFLOW_EXPERIMENT)
+    mlflow.langchain.autolog(silent=True)
+
 # Audio playback constants
 FORMAT = pyaudio.paInt16
 
@@ -178,24 +190,12 @@ async def main() -> None:
     input_mode = 'audio' if (not use_text_mode and audio_file) else 'text'
 
     # ingest env variables for BigQuery tables
-    google_cloud_project = os.getenv('GCP_PROJECT_ID')
+    google_cloud_project = os.getenv('GOOGLE_CLOUD_PROJECT')
 
     if not google_cloud_project:
         raise RuntimeError('GOOGLE_CLOUD_PROJECT not set in environment variables')
 
     bigquery_dataset = os.getenv('BIGQUERY_DATASET', 'blabin_dev')
-
-    # attempt to set up mlflow autolog
-    mlflow_tracking_uri = os.getenv('MLFLOW_URI_LOCAL')
-    mlflow_experiment = os.getenv('MLFLOW_EXPERIMENT', 'blabin-development')
-    if not mlflow_tracking_uri:
-        logging.warning(
-            'MLflow disabled: set MLFLOW_TRACKING_URI in .env (see terraform/mlflow/README.md).'
-        )
-    else:
-        mlflow.set_tracking_uri(mlflow_tracking_uri)
-        mlflow.set_experiment(mlflow_experiment)
-        mlflow.langchain.autolog()
 
     # update news sources for discussion
     news_store = NewsStore(project=google_cloud_project, dataset=bigquery_dataset)
