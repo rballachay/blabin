@@ -1,12 +1,10 @@
 import argparse
 import asyncio
-import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
-import mlflow
 import numpy as np
 import pyaudio
 import torch
@@ -17,32 +15,35 @@ from src.db.mistakes import MistakeStore
 from src.db.news import NewsStore
 from src.db.session import SessionStore
 from src.db.speaker import VoiceIdentifier
-from src.handleio.input import AudioInputProcessor, InputProcessor, TextInputProcessor
+from src.handleio.input import (
+    InputProcessor,
+    MicrophoneInputProcessor,
+    TextInputProcessor,
+    WavFileInputProcessor,
+)
 from src.handleio.output import AudioOutputProcessor, OutputProcessor, TextOutputProcessor
 from src.llm.agent import ConversationAgent
 from src.llm.client import AsyncLLMClient
 from src.llm.mistakes import analyze_session
 from src.llm.prompt import PromptManager
+from src.utils.audiolog import AudioTurnLogger
+from src.utils.mlflow import init_mlflow_autolog
 from src.utils.session import StatsAccumulator
 from src.vad.async_vad import AsyncVAD
 
 # GEMINI TTS only has 15 calls/day, disable for development
 SPEAK_OUTPUT = False
 
+# optionally log audio for debugging
+LOG_AUDIO = True
+
 # Load environment variables
 load_dotenv()
 
 # attempt to set up mlflow autolog
-MLFLOW_URI_LOCAL = os.getenv('MLFLOW_URI_LOCAL')
+MLFLOW_URI_LOCAL = os.getenv('MLFLOW_URI_LOCAL', './mlruns')
 MLFLOW_EXPERIMENT = os.getenv('MLFLOW_EXPERIMENT', 'blabin-development')
-if not MLFLOW_URI_LOCAL:
-    logging.warning(
-        'MLflow disabled: set MLFLOW_TRACKING_URI in .env (see terraform/mlflow/README.md).'
-    )
-else:
-    mlflow.set_tracking_uri(MLFLOW_URI_LOCAL)
-    mlflow.set_experiment(MLFLOW_EXPERIMENT)
-    mlflow.langchain.autolog(silent=True)
+init_mlflow_autolog(MLFLOW_URI_LOCAL, MLFLOW_EXPERIMENT)
 
 # Audio playback constants
 FORMAT = pyaudio.paInt16
@@ -69,18 +70,25 @@ class ConversationRunner:
         self.session_store = session_store
         self.session_id = session_id
         self.prompt_manager = prompt_manager
+        self.input_mode = input_mode
         self._stats = StatsAccumulator(session_id=session_id, input_mode=input_mode)
 
         # for one-time speaker persist (audio mode)
         self._speaker_persisted = False
         self._last_segment: np.ndarray = np.array([], dtype=np.float32)
         self._turn_index = 0
+        self._audio_logger = AudioTurnLogger('logs') if LOG_AUDIO else None
 
     async def run(self, llm_client: AsyncLLMClient) -> None:
         try:
             # greet once
             greeting = self.agent.say_hello()
             await self.output_processor.output(greeting, llm_client, speak_allowed=True)
+
+            # start listening after greeting
+            if isinstance(self.input_processor, MicrophoneInputProcessor):
+                self.input_processor.vad.flush()
+                self.input_processor.resume_listening()
 
             # main loop over turns
             async for turn in self.input_processor.stream():
@@ -102,11 +110,20 @@ class ConversationRunner:
                 latency_s = time.perf_counter() - t0
 
                 if response:
+                    # have to pause listening for mic input during TTS output
+                    if isinstance(self.input_processor, MicrophoneInputProcessor):
+                        self.input_processor.pause_listening()
+
                     await self.output_processor.output(
                         response,
                         llm_client,
                         speak_allowed=self.agent.should_speak_response(response),
                     )
+
+                    if isinstance(self.input_processor, MicrophoneInputProcessor):
+                        # Flush VAD state & resume listening
+                        self.input_processor.vad.flush()
+                        self.input_processor.resume_listening()
 
                     model_name = self.agent.llm.name
                     self._stats.record_assistant(str(response), latency_s, model_name)
@@ -126,8 +143,12 @@ class ConversationRunner:
                             print(f"[info] Created speaker '{name}' in DB.")
                         else:
                             print(f"[info] Updated embedding for returning speaker '{name}'.")
-                time.sleep(0.5)
 
+                # log audio turn if enabled
+                if (self._audio_logger is not None) and (self.input_mode == 'audio'):
+                    sr = getattr(self.input_processor, 'sample_rate', 16000)
+                    ch = getattr(self.input_processor, 'channels', 1)
+                    self._audio_logger.log_turn(self._turn_index, turn, sample_rate=sr, channels=ch)
             # cleanup
             await self.output_processor.aclose()
         except Exception as e:
@@ -183,11 +204,12 @@ async def main() -> None:
     )
     parser.add_argument('--script', type=str, default=None, help='Text file with user utterances')
     parser.add_argument('--chat', action='store_true', help='Interactive stdin chat mode')
+    parser.add_argument('--microphone', action='store_true', help='Stream audio from microphone')
     args = parser.parse_args()
 
     use_text_mode = bool(args.script or args.chat)
     audio_file = args.audio_file
-    input_mode = 'audio' if (not use_text_mode and audio_file) else 'text'
+    input_mode = 'audio' if (not use_text_mode and (audio_file or args.microphone)) else 'text'
 
     # ingest env variables for BigQuery tables
     google_cloud_project = os.getenv('GOOGLE_CLOUD_PROJECT')
@@ -220,20 +242,29 @@ async def main() -> None:
     )
 
     # Build input processor
-    if not use_text_mode and audio_file:
+    if not use_text_mode:
         # init VAD only for audio mode
         model, _ = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad')
         vad = AsyncVAD(
             model,
             threshold=0.7,
-            min_speech_duration_ms=250,
+            min_speech_duration_ms=500,
             min_silence_duration_ms=500,
             speech_pad_ms=30,
         )
-        input_processor = cast(
-            InputProcessor,
-            AudioInputProcessor(audio_file=audio_file, vad=vad, llm_client=llm_client),
-        )
+        listen_event = asyncio.Event()
+        if audio_file:
+            input_processor = cast(
+                InputProcessor,
+                WavFileInputProcessor(audio_file=audio_file, vad=vad, llm_client=llm_client),
+            )
+        elif args.microphone:
+            input_processor = cast(
+                InputProcessor,
+                MicrophoneInputProcessor(vad=vad, llm_client=llm_client, listen_event=listen_event),
+            )
+        else:
+            raise Exception('No valid audio input mode specified; use --audio-file or --microphone')
     else:
         input_processor = cast(InputProcessor, TextInputProcessor(script_file=args.script))
 

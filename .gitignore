@@ -241,3 +241,6 @@ terraform.rc
 # Allow templates
 !*.template.tfvars
 !*.template.tfvars.json
+
+# ignore logs
+*logs
