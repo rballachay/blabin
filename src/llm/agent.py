@@ -227,14 +227,6 @@ class ConversationAgent:
                 return {}
 
             user_text = (state.get('user_text') or '').strip()
-            if not user_text:
-                ask_name = await self.conversation_service.ask_for_name(
-                    '', reason='no usable text in this turn'
-                )
-                return {
-                    'response': ask_name,
-                    'conversation_started': True,
-                }
 
             extracted = await self.conversation_service.get_speaker_name(user_text)
             if extracted != 'unknown':

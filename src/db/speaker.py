@@ -1,7 +1,6 @@
 """
 BigQuery-backed speaker voice identification store.
 Note: Voice embeddings stored as JSON arrays (not optimal for vector search).
-For production, consider Vertex AI Vector Search or separate vector DB.
 """
 
 from __future__ import annotations
@@ -48,26 +47,22 @@ class VoiceIdentifier:
         audio: np.ndarray,
         weight: float = 1.0,
     ) -> bool:
-        try:
-            audio = normalize_volume(audio, audio_norm_target_dBFS, increase_only=True)
-            emb = self.model.embed_utterance(audio)
+        audio = normalize_volume(audio, audio_norm_target_dBFS, increase_only=True)
+        emb = self.model.embed_utterance(audio)
 
-            speaker_id = self.db.get_speaker_id_by_name(name)
-            if speaker_id is None:
-                self.db.add_speaker(name, emb)
-                return True
-
-            self.db.update_embedding_incremental(speaker_id, emb, weight=weight)
+        speaker_id = self.db.get_speaker_id_by_name(name)
+        if speaker_id is None:
+            self.db.add_speaker(name, emb)
             return True
-        except Exception:
-            return False
+
+        self.db.update_embedding_incremental(speaker_id, emb, weight=weight)
+        return True
 
     def identify_speaker(self, audio: np.ndarray) -> tuple[str, float]:
         audio = normalize_volume(audio, audio_norm_target_dBFS, increase_only=True)
         new_emb = self.model.embed_utterance(audio)
 
         best_match, score = self.db.compare_embeddings(new_emb)
-        print(best_match, score)
         if best_match and score > self.confidence:
             return best_match, score
         else:
@@ -86,19 +81,6 @@ class VoiceIdentifier:
 
 class SpeakerDB:
     """BigQuery-backed speaker database."""
-
-    TABLE_DDL = """
-    CREATE TABLE IF NOT EXISTS `{table_fq}` (
-      id INT64,
-      name STRING NOT NULL,
-      first_seen TIMESTAMP NOT NULL,
-      last_seen TIMESTAMP NOT NULL,
-      voice_signature STRING NOT NULL,  -- JSON array of floats
-      language_level STRING DEFAULT 'beginner',
-      sample_count INT64 DEFAULT 1
-    )
-    CLUSTER BY name
-    """
 
     def __init__(
         self,
@@ -123,10 +105,7 @@ class SpeakerDB:
     @staticmethod
     def _deserialize_embedding(s: str) -> np.ndarray:
         """Deserialize JSON string back to numpy array."""
-        try:
-            return np.array(json.loads(s), dtype=np.float32)
-        except Exception:
-            return np.array([], dtype=np.float32)
+        return np.array(json.loads(s), dtype=np.float32)
 
     def add_speaker(
         self, name: str, voice_signature: np.ndarray | str | None, *, sample_count: int = 1
@@ -253,7 +232,7 @@ class SpeakerDB:
             query_parameters=[
                 bigquery.ScalarQueryParameter('speaker_id', 'INT64', speaker_id),
                 bigquery.ScalarQueryParameter('voice_signature', 'STRING', serialized),
-                bigquery.ScalarQueryParameter('sample_count', 'FLOAT64', total),
+                bigquery.ScalarQueryParameter('sample_count', 'INT64', total),
                 bigquery.ScalarQueryParameter('last_seen', 'TIMESTAMP', now),
             ]
         )

@@ -32,10 +32,10 @@ from src.utils.session import StatsAccumulator
 from src.vad.async_vad import AsyncVAD
 
 # GEMINI TTS only has 15 calls/day, disable for development
-SPEAK_OUTPUT = True
+SPEAK_OUTPUT = False
 
 # optionally log audio for debugging
-LOG_AUDIO = True
+LOG_AUDIO = False
 
 # Load environment variables
 load_dotenv()
@@ -131,12 +131,19 @@ class ConversationRunner:
                 # Persist/update embedding once when we get a confirmed speaker and we have audio
                 if (
                     self.agent.current_speaker
-                    and not self._speaker_persisted
-                    and self._last_segment.size > 0
+                    and (not self._speaker_persisted)
+                    and (self.input_mode == 'audio')
                 ):
+                    if self._last_segment.size > 0:
+                        input_segment = self._last_segment
+                    elif isinstance(turn.audio_array, np.ndarray):
+                        input_segment = turn.audio_array
+                    else:
+                        continue  # no audio available
+
                     name = self.agent.current_speaker
                     existed = self.voice_identifier.db.name_exists(name)
-                    ok = await self.voice_identifier.confirm_and_update(name, self._last_segment)
+                    ok = await self.voice_identifier.confirm_and_update(name, input_segment)
                     if ok:
                         self._speaker_persisted = True
                         if not existed:
