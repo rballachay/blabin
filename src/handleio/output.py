@@ -1,6 +1,5 @@
 import asyncio
 import io
-import subprocess
 import tempfile
 import wave
 from typing import Protocol
@@ -72,7 +71,13 @@ class AudioOutputProcessor:
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=True) as tmp:
             tmp.write(audio_bytes)
             tmp.flush()
-            subprocess.run(['paplay', tmp.name], check=False)
+            proc = await asyncio.create_subprocess_exec(
+                'paplay',
+                tmp.name,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
 
     async def output(
         self, text: str, llm_client: AsyncLLMClient, speak_allowed: bool = True

@@ -32,7 +32,7 @@ from src.utils.session import StatsAccumulator
 from src.vad.async_vad import AsyncVAD
 
 # GEMINI TTS only has 15 calls/day, disable for development
-SPEAK_OUTPUT = False
+SPEAK_OUTPUT = True
 
 # optionally log audio for debugging
 LOG_AUDIO = True
@@ -88,7 +88,7 @@ class ConversationRunner:
             # start listening after greeting
             if isinstance(self.input_processor, MicrophoneInputProcessor):
                 self.input_processor.vad.flush()
-                self.input_processor.resume_listening()
+                await self.input_processor.resume_listening()
 
             # main loop over turns
             async for turn in self.input_processor.stream():
@@ -112,7 +112,7 @@ class ConversationRunner:
                 if response:
                     # have to pause listening for mic input during TTS output
                     if isinstance(self.input_processor, MicrophoneInputProcessor):
-                        self.input_processor.pause_listening()
+                        await self.input_processor.pause_listening()
 
                     await self.output_processor.output(
                         response,
@@ -123,7 +123,7 @@ class ConversationRunner:
                     if isinstance(self.input_processor, MicrophoneInputProcessor):
                         # Flush VAD state & resume listening
                         self.input_processor.vad.flush()
-                        self.input_processor.resume_listening()
+                        await self.input_processor.resume_listening()
 
                     model_name = self.agent.llm.name
                     self._stats.record_assistant(str(response), latency_s, model_name)
@@ -151,8 +151,6 @@ class ConversationRunner:
                     self._audio_logger.log_turn(self._turn_index, turn, sample_rate=sr, channels=ch)
             # cleanup
             await self.output_processor.aclose()
-        except Exception as e:
-            raise e
         finally:
             # Analyze full session (assistant + user context)
             summary = await analyze_session(
@@ -248,8 +246,8 @@ async def main() -> None:
         vad = AsyncVAD(
             model,
             threshold=0.7,
-            min_speech_duration_ms=500,
-            min_silence_duration_ms=500,
+            min_speech_duration_ms=1000,
+            min_silence_duration_ms=1000,
             speech_pad_ms=30,
         )
         listen_event = asyncio.Event()

@@ -158,15 +158,38 @@ class MicrophoneInputProcessor:
             stderr=asyncio.subprocess.DEVNULL,
         )
 
-    def resume_listening(self) -> None:
-        # Prepare discard window to flush residual playback bleed
-        self._discarding = True
-        samples_to_discard = int(self.sample_rate * (self.discard_ms_on_resume / 1000.0))
-        self._discard_remaining_samples = samples_to_discard
-        self.listen_event.set()
+    def _reset_discard_window(self, ms: int = 0) -> None:
+        self._discarding = ms > 0
+        self._discard_remaining_samples = int(self.sample_rate * (ms / 1000.0)) if ms > 0 else 0
 
-    def pause_listening(self) -> None:
+    async def pause_listening(self) -> None:
+        """
+        Fully stop capture so no data accumulates while paused.
+        """
         self.listen_event.clear()
+        # terminate parec so its pipe doesn't accumulate playback audio
+        if self.use_pulse and self._proc is not None:
+            self._proc.terminate()
+            try:
+                await asyncio.wait_for(self._proc.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                self._proc.kill()
+                _ = await self._proc.wait()
+            self._proc = None
+
+        # reset VAD and pending buffers
+        self.vad.flush()
+
+        # discard a small window on resume (optional)
+        self._reset_discard_window(ms=getattr(self, 'discard_ms_on_resume', 50))
+
+    async def resume_listening(self) -> None:
+        """
+        Restart capture cleanly after playback finishes.
+        """
+        if self.use_pulse and self._proc is None:
+            self._proc = await self._open_pulse_stream()
+        self.listen_event.set()
 
     async def stream(self) -> AsyncIterator[UserTurn]:
         if self.use_pulse:
