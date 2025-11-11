@@ -5,12 +5,20 @@ Adaptive agent for helping me learn French faster
 - Use the dev container for this workspace (gcloud CLI is preinstalled).
 - A Google Cloud project with billing enabled
 - BigQuery API enabled in the project
+- Google Cloud Text-to-Speech API enabled
+- Google Cloud Speech-to-Text API enabled
 
 ## Authenticate to Google Cloud
 ```sh
 gcloud init             # set up CLI and choose your project
 gcloud auth application-default login
 gcloud config set project <YOUR_GCP_PROJECT_ID>
+```
+
+## Enable Speech APIs (required for TTS/STT)
+```sh
+# Enable Text-to-Speech and Speech-to-Text in your project
+gcloud services enable texttospeech.googleapis.com speech.googleapis.com
 ```
 
 ## Create a Gemini API key

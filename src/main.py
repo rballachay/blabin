@@ -32,7 +32,7 @@ from src.utils.session import StatsAccumulator
 from src.vad.async_vad import AsyncVAD
 
 # GEMINI TTS only has 15 calls/day, disable for development
-SPEAK_OUTPUT = False
+SPEAK_OUTPUT = True
 
 # optionally log audio for debugging
 LOG_AUDIO = False
