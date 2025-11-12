@@ -39,7 +39,8 @@ dependencies = [
     "google-cloud-bigquery>=3.38.0",
     "google-cloud-storage>=3.5.0",
     "google-cloud-texttospeech>=2.33.0",
-    "google-cloud-speech>=2.34.0"
+    "google-cloud-speech>=2.34.0",
+    "tavily-python>=0.7.12"
 ]
 
 [project.optional-dependencies]

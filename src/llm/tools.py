@@ -1,6 +1,10 @@
+from typing import Any
+
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
+from tavily import TavilyClient
 
+from src.context.search import synthesize_search_answer
 from src.db.news import NewsStore
 
 
@@ -21,7 +25,7 @@ class FetchArticleInput(BaseModel):
     )
 
 
-def build_tools(news_store: NewsStore):
+def build_tools(news_store: NewsStore, search_client: TavilyClient) -> list[Any]:
     """
     Define tools the LLM can call. Includes a news topic fetcher that returns a policy header
     followed by a numbered list of titles (and optional snippets).
@@ -77,4 +81,64 @@ def build_tools(news_store: NewsStore):
 
         return _json.dumps(payload, ensure_ascii=False)
 
-    return [fetch_news_topics, fetch_news_article]
+    @tool('search_web', return_direct=False)
+    def search_web(query: str, max_results: int = 5, deep: bool = True) -> dict[str, Any]:
+        """
+        Topical web search using Tavily.
+        Inputs:
+        - query: search query
+        - max_results: max number of results (default 5)
+        - deep: use deeper search (slower but better coverage)
+        Returns JSON with fields:
+        {
+            "answer": str | null,
+            "citations": [{"title": str, "url": str}]  // up to k
+        }
+        """
+        if not query or not query.strip():
+            return {'answer': None, 'citations': []}
+
+        resp = search_client.search(
+            query, include_answer=True, max_results=max_results, deep=deep
+        )  # include_answer helps populate 'answer'
+
+        answer, citations = synthesize_search_answer(resp)
+
+        return {
+            'answer': answer,
+            'citations': citations,
+        }
+
+    @tool('fetch_url', return_direct=False)
+    def fetch_url(url: str, max_chars: int = 12000) -> dict[str, Any]:
+        """
+        Fetch and extract main text from a URL. To be called after search_web if
+        more information is needed from the sources.
+        Inputs:
+        - url: page URL (http/https)
+        - max_chars: truncate extracted text to this many characters
+        Returns JSON:
+        {
+            "url": str,
+            "title": str | null,
+            "text": str
+        }
+        """
+        # Tavily returns: {"results": [{"url", "title", "raw_content", "images": [...] }], ...}
+        resp = search_client.extract([url])
+
+        title: str | None = None
+        text: str = ''
+
+        results = (resp or {}).get('results') or []
+        if results:
+            item = results[0] or {}
+            title = (item.get('title') or '').strip() or None
+            text = (item.get('raw_content') or '').strip()
+
+        if max_chars and len(text) > max_chars:
+            text = text[: int(max_chars)] + '…'
+
+        return {'url': url, 'title': title, 'text': text}
+
+    return [fetch_news_topics, fetch_news_article, search_web, fetch_url]

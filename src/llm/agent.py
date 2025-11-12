@@ -7,6 +7,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
+from tavily import TavilyClient
 
 from src.db.news import NewsStore
 from src.db.speaker import VoiceIdentifier
@@ -86,6 +87,7 @@ class ConversationAgent:
         voice_identifier: VoiceIdentifier,
         news_store: NewsStore,
         prompt_manager: PromptManager,
+        search_client: TavilyClient,
         prompt_name: str = 'teacher_v1',
     ):
         self.current_speaker: str | None = None
@@ -106,13 +108,12 @@ class ConversationAgent:
         self.conversation_service = ConversationService(self.llm)
 
         self.voice_identifier = voice_identifier
-        self.news_store = news_store
 
         # Simple in-class memory for chat history
         self._history: list[dict[str, str]] = []
 
         # build our llm with tools
-        self._tools = build_tools(news_store)
+        self._tools = build_tools(news_store, search_client)
         self._llm_with_tools = self.llm.bind_tools(self._tools)
         self._tool_node = ToolNode(self._tools)
 

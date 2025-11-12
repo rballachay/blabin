@@ -7,6 +7,7 @@ Adaptive agent for helping me learn French faster
 - BigQuery API enabled in the project
 - Google Cloud Text-to-Speech API enabled
 - Google Cloud Speech-to-Text API enabled
+- Tavily account and API key (for topical web search tools)
 
 ## Authenticate to Google Cloud
 ```sh
@@ -26,6 +27,16 @@ gcloud services enable texttospeech.googleapis.com speech.googleapis.com
 "$BROWSER" https://aistudio.google.com/app/apikey
 ```
 Copy the key; you will add it to `.env` below.
+
+## Tavily web search (topical tools)
+The agent can answer topical questions using Tavily search and URL fetching.
+1) Create a Tavily account and get an API key:
+   ```sh
+   "$BROWSER" https://tavily.com
+   ```
+2) Add the key to your environment (see .env section below).
+The key powers the `search_web` and `fetch_url` tools. Without it, those tools are disabled.
+
 
 ## Infrastructure (Terraform)
 Set up cloud resources using the READMEs in the terraform folders:

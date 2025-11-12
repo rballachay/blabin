@@ -9,6 +9,7 @@ import numpy as np
 import pyaudio
 import torch
 from dotenv import load_dotenv
+from tavily import TavilyClient
 
 from src.context.news import NewsScraper
 from src.db.mistakes import MistakeStore
@@ -32,7 +33,7 @@ from src.utils.session import StatsAccumulator
 from src.vad.async_vad import AsyncVAD
 
 # GEMINI TTS only has 15 calls/day, disable for development
-SPEAK_OUTPUT = True
+SPEAK_OUTPUT = False
 
 # optionally log audio for debugging
 LOG_AUDIO = False
@@ -245,11 +246,16 @@ async def main() -> None:
     prompt_manager = PromptManager()
     session_store = SessionStore(project=google_cloud_project, dataset=bigquery_dataset)
 
+    # tavily store for news search
+    tavily_api_key = os.getenv('TAVILY_API_KEY', '')
+    search_client = TavilyClient(api_key=str(tavily_api_key))
+
     agent = ConversationAgent(
         api_key=gemini_key,
         voice_identifier=voice_identifier,
         news_store=news_store,
         prompt_manager=prompt_manager,
+        search_client=search_client,
     )
 
     # Build input processor
