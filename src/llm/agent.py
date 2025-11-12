@@ -119,6 +119,8 @@ class ConversationAgent:
         # Build a LangGraph for the conversation turn
         self._graph = self._build_graph()
 
+        self.shutdown = False
+
     def _build_graph(self):
         g = StateGraph(_ConvState)
 
@@ -324,6 +326,11 @@ class ConversationAgent:
                     out_text = str(first_item).strip()
             else:
                 out_text = str(ai.content).strip()
+
+            # our prompt may request END_SESSION to finish
+            if out_text == 'END_SESSION':
+                out_text = 'Ok, merci pour cette session ! À la prochaine fois.'
+                self.shutdown = True
 
             # Otherwise finalize: take content as the assistant reply
             new_hist = list(state.get('history', []))

@@ -23,9 +23,9 @@ from src.handleio.input import (
 )
 from src.handleio.output import AudioOutputProcessor, OutputProcessor, TextOutputProcessor
 from src.llm.agent import ConversationAgent
-from src.llm.client import AsyncLLMClient
 from src.llm.mistakes import analyze_session
 from src.llm.prompt import PromptManager
+from src.llm.speech import AsyncLLMClient
 from src.utils.audiolog import AudioTurnLogger
 from src.utils.mlflow import init_mlflow_autolog
 from src.utils.session import StatsAccumulator
@@ -156,8 +156,14 @@ class ConversationRunner:
                     sr = getattr(self.input_processor, 'sample_rate', 16000)
                     ch = getattr(self.input_processor, 'channels', 1)
                     self._audio_logger.log_turn(self._turn_index, turn, sample_rate=sr, channels=ch)
+
+                if self.agent.shutdown:
+                    print('[info] Session ended by user request.')
+                    break
+
             # cleanup
             await self.output_processor.aclose()
+
         finally:
             # Analyze full session (assistant + user context)
             summary = await analyze_session(

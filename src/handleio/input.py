@@ -13,7 +13,7 @@ import pyaudio
 from resemblyzer import normalize_volume
 from resemblyzer.hparams import audio_norm_target_dBFS
 
-from src.llm.client import AsyncLLMClient
+from src.llm.speech import AsyncLLMClient
 from src.vad.async_vad import AsyncVAD
 
 TARGET_SR = 16000

@@ -6,7 +6,7 @@ from typing import Protocol
 
 import pyaudio
 
-from src.llm.client import AsyncLLMClient
+from src.llm.speech import AsyncLLMClient
 
 
 class OutputProcessor(Protocol):
