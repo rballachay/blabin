@@ -9,6 +9,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 from tavily import TavilyClient
 
+from src.context.email import EmailClient
 from src.db.mistakes import MistakeStore
 from src.db.news import NewsStore
 from src.db.speaker import VoiceIdentifier
@@ -90,6 +91,7 @@ class ConversationAgent:
         prompt_manager: PromptManager,
         search_client: TavilyClient,
         mistake_store: MistakeStore,
+        email_client: EmailClient,
         prompt_name: str = 'teacher_v1',
     ):
         self.current_speaker: str | None = None
@@ -108,6 +110,7 @@ class ConversationAgent:
         )
 
         self.conversation_service = ConversationService(self.llm)
+        self.email_client = email_client
 
         self.voice_identifier = voice_identifier
 
@@ -116,7 +119,12 @@ class ConversationAgent:
 
         # build our llm with tools
         self._tools = build_tools(
-            lambda: self.current_speaker, news_store, search_client, mistake_store
+            lambda: self.current_speaker,
+            news_store,
+            search_client,
+            mistake_store,
+            self.conversation_service,
+            self.email_client,
         )
         self._llm_with_tools = self.llm.bind_tools(self._tools)
         self._tool_node = ToolNode(self._tools)

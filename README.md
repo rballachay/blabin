@@ -37,6 +37,16 @@ The agent can answer topical questions using Tavily search and URL fetching.
 2) Add the key to your environment (see .env section below).
 The key powers the `search_web` and `fetch_url` tools. Without it, those tools are disabled.
 
+## Create a SendGrid Account
+Sendgrid is a transactional email service that lets you create and send emails with a RESTful API. This email is used to send practice exercises to the students.
+1) Create a free account in SendGrid
+2) Verify a single sender identity with email address of your choice
+3) Ensure API key has mail send permissions
+4) Update .env with variables:
+```sh
+SENDGRID_API_KEY=SG.xxxxx
+SENDER_EMAIL=<your_verified_single_sender@example.com>
+```
 
 ## Infrastructure (Terraform)
 Set up cloud resources using the READMEs in the terraform folders:
@@ -67,6 +77,13 @@ GOOGLE_CLOUD_QUOTA_PROJECT=<GOOGLE_CLOUD_PROJECT>
 # settings for mlflow
 MLFLOW_URI_LOCAL=http://127.0.0.1:8081
 MLFLOW_EXPERIMENT=blabin-development
+
+# tavily search config
+TAVILY_API_KEY=<TAVILY_API_KEY>
+
+# config for sending emails with practice questions
+SENDGRID_API_KEY=<SENDGRID_API_KEY>
+SENDGRID_EMAIL=<SENDGRID_EMAIL>
 ```
 
 ## Using MLflow

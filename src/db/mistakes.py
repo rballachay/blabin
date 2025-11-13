@@ -175,7 +175,7 @@ class MistakeStore:
                 bigquery.ScalarQueryParameter('user_name', 'STRING', str(user_name))
             ]
             q_by_user = f"""
-            SELECT session_id, created_at, records_json
+            SELECT session_id, created_at, records_json, level_cefr, level_confidence
             FROM `{self.table_fq}`
             WHERE user_name = @user_name
                 {since_clause}
@@ -194,8 +194,15 @@ class MistakeStore:
         all_records: list[dict[str, Any]] = []
         type_counts: Counter[str] = Counter()
         examples_by_type: defaultdict[str, list[str]] = defaultdict(list)
+        cefr_to_idx = {'A1': 1, 'A2': 2, 'B1': 3, 'B2': 4, 'C1': 5, 'C2': 6}
+        levels_seen: list[int] = []
+        idx_to_cefr = {v: k for k, v in cefr_to_idx.items()}
 
         for row in rows:
+            lc = getattr(row, 'level_cefr', None)
+            if lc:
+                levels_seen.append(cefr_to_idx.get(str(lc), 3))
+
             recs = getattr(row, 'records_json', None)
             if isinstance(recs, str):
                 recs = json.loads(recs)
@@ -221,6 +228,9 @@ class MistakeStore:
             'total_records': len(all_records),
             'by_type': by_type,
             'records': all_records,
+            'level': idx_to_cefr.get(round(sum(levels_seen) / len(levels_seen)))
+            if levels_seen
+            else None,
         }
 
     async def export_summary_json(self, json_path: str, session_id: int) -> Path:

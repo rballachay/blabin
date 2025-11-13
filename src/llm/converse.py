@@ -124,6 +124,49 @@ class ConversationService:
         ]
         return await self._resp_text(messages)
 
+    async def generate_practice_problems(
+        self, mistake_summary: dict[str, Any], count: int = 20
+    ) -> list[str]:
+        """
+        Generate 'count' short practice problems based on the user's recent mistake summary.
+        Returns a list of problem strings. Keeps output concise and suitable for a .txt handout.
+        """
+        mistakes_records = mistake_summary.get('records', [])
+        cefr = (mistake_summary.get('level') or '') if isinstance(mistake_summary, dict) else 'B2'
+        level_hint = ''
+        if cefr in {'A1', 'A2', 'B1', 'B2', 'C1', 'C2'}:
+            level_hint = f' Target CEFR level: {cefr}. Adjust the difficulty of the prompts accordingly, tend to make them more difficult, as we would like to challenge the user.'
+
+        sys = (
+            "You are a concise French tutor. Based on the learner's recent mistakes, "
+            f'generate exactly {max(1, int(count))} short practice prompts that help them fix those issues. '
+            f'{level_hint} '
+            'Use simple, clear instructions. Do not include answers. '
+            'Output one prompt per line, with no numbering and no extra commentary.'
+        )
+        mistakes = [
+            f'- Error: {i["error"]}, Explanation: {i["explanation"]}\n' for i in mistakes_records
+        ]
+        user = f'Here are some of my recent mistakes:\n{mistakes}\nPlease return only the prompts.'
+        messages = [
+            {'role': 'system', 'content': sys},
+            {'role': 'user', 'content': user},
+        ]
+        text = await self._resp_text(messages)
+        lines = [ll.strip() for ll in (text or '').splitlines() if ll.strip()]
+        # Strip any accidental numbering like "1) " or "1. "
+        out: list[str] = []
+        import re
+
+        for ll in lines:
+            l2 = re.sub(r'^\s*\d+[\).\s-]+\s*', '', ll)
+            if l2:
+                out.append(l2)
+        # Ensure exact count if possible
+        if len(out) > count:
+            out = out[:count]
+        return out
+
 
 def get_time_appropriate_greeting() -> str:
     hour = datetime.now().hour

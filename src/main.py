@@ -11,6 +11,7 @@ import torch
 from dotenv import load_dotenv
 from tavily import TavilyClient
 
+from src.context.email import EmailClient
 from src.context.news import NewsScraper
 from src.db.mistakes import MistakeStore
 from src.db.news import NewsStore
@@ -257,6 +258,12 @@ async def main() -> None:
     mistake_store = MistakeStore(project=google_cloud_project, dataset=bigquery_dataset)
     session_id = int(time.time() / 1000)
 
+    # get
+    sendgrid_key = os.getenv('SENDGRID_API_KEY', '')
+    sendgrid_email = os.getenv('SENDGRID_EMAIL', '')
+
+    email_client = EmailClient(sendgrid_key, sendgrid_email)
+
     agent = ConversationAgent(
         api_key=gemini_key,
         voice_identifier=voice_identifier,
@@ -264,6 +271,7 @@ async def main() -> None:
         prompt_manager=prompt_manager,
         search_client=search_client,
         mistake_store=mistake_store,
+        email_client=email_client,
     )
 
     # Build input processor

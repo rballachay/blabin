@@ -6,9 +6,11 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
+from src.context.email import EmailClient
 from src.context.search import synthesize_search_answer
 from src.db.mistakes import MistakeStore
 from src.db.news import NewsStore
+from src.llm.converse import ConversationService
 
 
 class NewsTopicInput(BaseModel):
@@ -38,9 +40,22 @@ class MistakesQueryInput(BaseModel):
     max_records: int = Field(
         default=200, ge=50, le=5000, description='Cap the number of mistake records returned.'
     )
-    aggregate_only: bool = Field(
-        default=False, description='If true, omit raw records and return only aggregate counts.'
+
+
+class EmailPracticeProblemsInput(BaseModel):
+    recipient_email: str = Field(
+        ...,
+        description='Destination email address',
     )
+    subject: str = Field(default='French practice problems', description='Email subject')
+    body_intro: str = Field(
+        default='Bonjour ! Voici des exercices basés sur vos erreurs récentes.',
+        description='Intro line before attachment notice',
+    )
+    problems_count: int = Field(
+        default=20, ge=5, le=100, description='How many practice problems to generate'
+    )
+    since_days: int = Field(default=7, ge=1, le=30, description='Look back window for mistakes')
 
 
 def build_tools(
@@ -48,6 +63,8 @@ def build_tools(
     news_store: NewsStore,
     search_client: TavilyClient,
     mistake_store: MistakeStore,
+    conv: ConversationService,
+    email_client: EmailClient,
 ) -> list[Any]:
     """
     Define tools the LLM can call. Includes a news topic fetcher that returns a policy header
@@ -169,10 +186,10 @@ def build_tools(
         since_days: int | None = 30,
         limit_summaries: int = 10,
         max_records: int = 200,
-        aggregate_only: bool = False,
     ) -> str:
         """
         Aggregate learner mistakes over recent session summaries (no join).
+        Return this JSON directly to email_practice_problems via mistakes_summary_json.
         Returns JSON:
         {
           "filtered_by_user": bool,
@@ -186,17 +203,72 @@ def build_tools(
         data = await mistake_store.get_user_mistakes(
             user_name=user_name(), since_days=since_days, limit_summaries=limit_summaries
         )
-        if aggregate_only:
-            data = {
-                k: v
-                for k, v in data.items()
-                if k
-                in ('filtered_by_user', 'user_name', 'total_summaries', 'total_records', 'by_type')
-            }
-        else:
-            recs = list(data.get('records', []))
-            if max_records and len(recs) > max_records:
-                data['records'] = recs[:max_records]
+        recs = list(data.get('records', []))
+        if max_records and len(recs) > max_records:
+            data['records'] = recs[:max_records]
         return json.dumps(data, ensure_ascii=False)
 
-    return [fetch_news_topics, fetch_news_article, search_web, fetch_url, get_user_mistakes]
+    @tool('email_practice_problems', args_schema=EmailPracticeProblemsInput)
+    async def email_practice_problems(
+        recipient_email: str,
+        subject: str = 'French practice problems',
+        body_intro: str = 'Bonjour ! Voici des exercices basés sur vos erreurs récentes.',
+        problems_count: int = 20,
+        since_days: int = 7,
+        mistakes_summary_json: str = '{}',
+    ) -> str:
+        """
+        First call get_user_mistakes and pass its JSON as mistakes_summary_json.
+        If mistakes_summary_json is omitted, this tool will fetch last-week mistakes automatically.
+        Emails a .txt attachment with generated practice problems.
+        Returns JSON: {"sent": bool, "count": int, "filename": str, "user_name": str|null}
+        """
+        uname = ((user_name() or '') or '').lower() or None
+
+        if not mistakes_summary_json or mistakes_summary_json.strip() in ('{}', 'null'):
+            summary = await mistake_store.get_user_mistakes(
+                user_name=user_name(), since_days=since_days
+            )
+        else:
+            summary = json.loads(mistakes_summary_json)
+
+        problems = await conv.generate_practice_problems(summary, count=problems_count)
+        if not problems:
+            problems = ['Ecrivez trois phrases correctes en utilisant le passé composé.']
+
+        # Build .txt payload
+        header = []
+        if uname:
+            header.append(f'Apprenant: {uname}')
+        header.append(f"Fenêtre d'analyse: {since_days} jours")
+        header.append(f"Nombre d'exercices: {len(problems)}")
+        header_text = '\n'.join(header)
+        problems_text = '\n'.join(f'- {p}' for p in problems)
+        txt_content = f'{header_text}\n\nExercices:\n{problems_text}\n'
+        filename = 'practice_problems.txt'
+
+        body = f'{body_intro}\n\nVous trouverez les exercices en pièce jointe.\n'
+        send_resp = email_client(
+            to_addr=recipient_email,
+            subject=subject,
+            body_text=body,
+            filename=filename,
+            file_content=txt_content,
+        )
+        out = {
+            'sent': True,
+            'count': len(problems),
+            'filename': filename,
+            'user_name': uname,
+            'sendgrid': send_resp,
+        }
+        return json.dumps(out, ensure_ascii=False)
+
+    return [
+        fetch_news_topics,
+        fetch_news_article,
+        search_web,
+        fetch_url,
+        get_user_mistakes,
+        email_practice_problems,
+    ]
