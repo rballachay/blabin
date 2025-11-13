@@ -1,3 +1,5 @@
+import json
+from collections.abc import Callable
 from typing import Any
 
 from langchain_core.tools import tool
@@ -5,6 +7,7 @@ from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
 from src.context.search import synthesize_search_answer
+from src.db.mistakes import MistakeStore
 from src.db.news import NewsStore
 
 
@@ -25,7 +28,27 @@ class FetchArticleInput(BaseModel):
     )
 
 
-def build_tools(news_store: NewsStore, search_client: TavilyClient) -> list[Any]:
+class MistakesQueryInput(BaseModel):
+    since_days: int | None = Field(
+        default=30, ge=1, le=3650, description='Look back window in days (null = all time).'
+    )
+    limit_summaries: int = Field(
+        default=10, ge=1, le=200, description='Max number of recent session summaries to include.'
+    )
+    max_records: int = Field(
+        default=200, ge=50, le=5000, description='Cap the number of mistake records returned.'
+    )
+    aggregate_only: bool = Field(
+        default=False, description='If true, omit raw records and return only aggregate counts.'
+    )
+
+
+def build_tools(
+    user_name: Callable[[], str | None],
+    news_store: NewsStore,
+    search_client: TavilyClient,
+    mistake_store: MistakeStore,
+) -> list[Any]:
     """
     Define tools the LLM can call. Includes a news topic fetcher that returns a policy header
     followed by a numbered list of titles (and optional snippets).
@@ -141,4 +164,39 @@ def build_tools(news_store: NewsStore, search_client: TavilyClient) -> list[Any]
 
         return {'url': url, 'title': title, 'text': text}
 
-    return [fetch_news_topics, fetch_news_article, search_web, fetch_url]
+    @tool('get_user_mistakes', args_schema=MistakesQueryInput)
+    async def get_user_mistakes(
+        since_days: int | None = 30,
+        limit_summaries: int = 10,
+        max_records: int = 200,
+        aggregate_only: bool = False,
+    ) -> str:
+        """
+        Aggregate learner mistakes over recent session summaries (no join).
+        Returns JSON:
+        {
+          "filtered_by_user": bool,
+          "user_name": str | null,
+          "total_summaries": int,
+          "total_records": int,
+          "by_type": [{"type": str, "count": int, "examples": [str,...]}],
+          "records": [ ... up to max_records ... ]
+        }
+        """
+        data = await mistake_store.get_user_mistakes(
+            user_name=user_name(), since_days=since_days, limit_summaries=limit_summaries
+        )
+        if aggregate_only:
+            data = {
+                k: v
+                for k, v in data.items()
+                if k
+                in ('filtered_by_user', 'user_name', 'total_summaries', 'total_records', 'by_type')
+            }
+        else:
+            recs = list(data.get('records', []))
+            if max_records and len(recs) > max_records:
+                data['records'] = recs[:max_records]
+        return json.dumps(data, ensure_ascii=False)
+
+    return [fetch_news_topics, fetch_news_article, search_web, fetch_url, get_user_mistakes]

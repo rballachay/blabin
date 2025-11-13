@@ -24,7 +24,6 @@ output "tables_created" {
     google_bigquery_table.articles.table_id,
     google_bigquery_table.session_summaries.table_id,
     google_bigquery_table.sessions.table_id,
-    google_bigquery_table.session_turns.table_id,
     google_bigquery_table.speakers.table_id,
   ]
 }
@@ -35,7 +34,6 @@ output "table_full_names" {
     articles          = "${var.project_id}.${google_bigquery_dataset.blabin.dataset_id}.${google_bigquery_table.articles.table_id}"
     session_summaries = "${var.project_id}.${google_bigquery_dataset.blabin.dataset_id}.${google_bigquery_table.session_summaries.table_id}"
     sessions          = "${var.project_id}.${google_bigquery_dataset.blabin.dataset_id}.${google_bigquery_table.sessions.table_id}"
-    session_turns     = "${var.project_id}.${google_bigquery_dataset.blabin.dataset_id}.${google_bigquery_table.session_turns.table_id}"
     speakers          = "${var.project_id}.${google_bigquery_dataset.blabin.dataset_id}.${google_bigquery_table.speakers.table_id}"
   }
 }
@@ -63,7 +61,6 @@ output "summary" {
       google_bigquery_table.articles.table_id,
       google_bigquery_table.session_summaries.table_id,
       google_bigquery_table.sessions.table_id,
-      google_bigquery_table.session_turns.table_id,
       google_bigquery_table.speakers.table_id,
     ])}
 

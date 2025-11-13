@@ -52,7 +52,7 @@ class StatsAccumulator:
         self._assistant_tokens += toks
         self._assistant_latencies.append(lat_ms)
 
-    def finish(self) -> dict[str, Any]:
+    def finish(self, user_name: str | None = None) -> dict[str, Any]:
         t1 = time.perf_counter()
         duration_sec = float(t1 - self._t0)
         lats = sorted(self._assistant_latencies)
@@ -61,6 +61,7 @@ class StatsAccumulator:
 
         session_row = {
             'session_id': self.session_id,
+            'user_name': user_name.lower() if user_name else user_name,
             'created_at': self.created_at,
             'ended_at': _now_iso(),
             'duration_sec': duration_sec,

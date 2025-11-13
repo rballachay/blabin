@@ -100,6 +100,11 @@ resource "google_bigquery_table" "session_summaries" {
       mode = "NULLABLE"
     },
     {
+      name = "user_name"
+      type = "STRING"
+      mode = "NULLABLE"
+    },
+    {
       name = "created_at"
       type = "TIMESTAMP"
       mode = "REQUIRED"
@@ -166,6 +171,11 @@ resource "google_bigquery_table" "sessions" {
       name = "session_id"
       type = "INT64"
       mode = "REQUIRED"
+    },
+    {
+      name = "user_name"
+      type = "STRING"
+      mode = "NULLABLE"
     },
     {
       name = "created_at"

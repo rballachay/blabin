@@ -9,6 +9,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 from tavily import TavilyClient
 
+from src.db.mistakes import MistakeStore
 from src.db.news import NewsStore
 from src.db.speaker import VoiceIdentifier
 from src.llm.converse import ConversationService, get_time_appropriate_greeting
@@ -88,6 +89,7 @@ class ConversationAgent:
         news_store: NewsStore,
         prompt_manager: PromptManager,
         search_client: TavilyClient,
+        mistake_store: MistakeStore,
         prompt_name: str = 'teacher_v1',
     ):
         self.current_speaker: str | None = None
@@ -113,7 +115,9 @@ class ConversationAgent:
         self._history: list[dict[str, str]] = []
 
         # build our llm with tools
-        self._tools = build_tools(news_store, search_client)
+        self._tools = build_tools(
+            lambda: self.current_speaker, news_store, search_client, mistake_store
+        )
         self._llm_with_tools = self.llm.bind_tools(self._tools)
         self._tool_node = ToolNode(self._tools)
 

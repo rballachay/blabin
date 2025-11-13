@@ -34,6 +34,7 @@ class SessionStore:
     def _upsert_session_sync(self, r: dict[str, Any]) -> None:
         params = [
             bigquery.ScalarQueryParameter('session_id', 'INT64', r.get('session_id')),
+            bigquery.ScalarQueryParameter('user_name', 'STRING', r.get('user_name')),
             bigquery.ScalarQueryParameter('created_at', 'TIMESTAMP', r.get('created_at')),
             bigquery.ScalarQueryParameter('ended_at', 'TIMESTAMP', r.get('ended_at')),
             bigquery.ScalarQueryParameter('duration_sec', 'FLOAT64', r.get('duration_sec')),
@@ -63,13 +64,13 @@ class SessionStore:
 
         query = f"""
         INSERT INTO `{self.sessions_fq}`
-          (session_id, created_at, ended_at, duration_sec, input_mode,
+          (session_id, user_name, created_at, ended_at, duration_sec, input_mode,
            turns_total, turns_user, turns_assistant,
            user_chars, assistant_chars, user_words, assistant_words,
            user_tokens_approx, assistant_tokens_approx,
            resp_latency_avg_ms, resp_latency_p95_ms, errors, notes)
         VALUES (
-          @session_id, @created_at, @ended_at, @duration_sec, @input_mode,
+          @session_id, @user_name, @created_at, @ended_at, @duration_sec, @input_mode,
           @turns_total, @turns_user, @turns_assistant,
           @user_chars, @assistant_chars, @user_words, @assistant_words,
           @user_tokens_approx, @assistant_tokens_approx,
@@ -100,6 +101,7 @@ class SessionStore:
 
         cols = [
             'session_id',
+            'user_name',
             'created_at',
             'ended_at',
             'duration_sec',
@@ -126,6 +128,7 @@ class SessionStore:
                 writer.writerow(
                     {
                         'session_id': row.session_id,
+                        'user_name': getattr(row, 'user_name', None),
                         'created_at': row.created_at.isoformat() if row.created_at else None,
                         'ended_at': row.ended_at.isoformat() if row.ended_at else None,
                         'duration_sec': row.duration_sec,

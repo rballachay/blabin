@@ -142,7 +142,7 @@ class ConversationRunner:
                     else:
                         continue  # no audio available
 
-                    name = self.agent.current_speaker
+                    name = self.agent.current_speaker.lower()
                     existed = self.voice_identifier.db.name_exists(name)
                     ok = await self.voice_identifier.confirm_and_update(name, input_segment)
                     if ok:
@@ -175,9 +175,12 @@ class ConversationRunner:
                 records=summary.get('records', []),
                 counts=summary.get('counts', []),
                 level=summary.get('level') or {},
+                user_name=self.agent.current_speaker.lower()
+                if self.agent.current_speaker
+                else self.agent.current_speaker,
             )
             # persist session statistics
-            sess_row = self._stats.finish()
+            sess_row = self._stats.finish(self.agent.current_speaker)
             await self.session_store.upsert_session(sess_row)
 
 
@@ -250,12 +253,17 @@ async def main() -> None:
     tavily_api_key = os.getenv('TAVILY_API_KEY', '')
     search_client = TavilyClient(api_key=str(tavily_api_key))
 
+    # Mistake store + session
+    mistake_store = MistakeStore(project=google_cloud_project, dataset=bigquery_dataset)
+    session_id = int(time.time() / 1000)
+
     agent = ConversationAgent(
         api_key=gemini_key,
         voice_identifier=voice_identifier,
         news_store=news_store,
         prompt_manager=prompt_manager,
         search_client=search_client,
+        mistake_store=mistake_store,
     )
 
     # Build input processor
@@ -287,10 +295,6 @@ async def main() -> None:
 
     # Choose output processor (audio TTS vs stdout)
     output_processor = AudioOutputProcessor() if SPEAK_OUTPUT else TextOutputProcessor()
-
-    # Mistake store + session
-    mistake_store = MistakeStore(project=google_cloud_project, dataset=bigquery_dataset)
-    session_id = int(time.time() / 1000)
 
     runner = ConversationRunner(
         agent=agent,

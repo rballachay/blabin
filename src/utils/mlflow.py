@@ -73,7 +73,7 @@ def _is_mlflow_server_up(tracking_uri: str, timeout: float = 3.0) -> bool:
 def init_mlflow_autolog(
     tracking_uri: str,
     experiment_name: str,
-    probe_timeout: float = 5.0,
+    probe_timeout: float = 10.0,
 ) -> str | None:
     """
     Initialize MLflow with autologging after verifying the server is reachable for HTTP(S) URIs.

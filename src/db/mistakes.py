@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import json
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,7 @@ class MistakeStore:
         counts: list[Any],
         level: dict[str, Any] | None = None,
         timestamp: str | None = None,
+        user_name: str | None = None,
     ) -> None:
         await asyncio.to_thread(
             self._record_session_summary_sync,
@@ -45,6 +47,7 @@ class MistakeStore:
             counts,
             level or {},
             timestamp,
+            user_name,
         )
 
     def _record_session_summary_sync(
@@ -54,6 +57,7 @@ class MistakeStore:
         counts: list[Any],
         level: dict[str, Any],
         timestamp: str | None,
+        user_name: str | None,
     ) -> None:
         from datetime import datetime, timezone
 
@@ -63,6 +67,7 @@ class MistakeStore:
         # Use parameterized query
         params = [
             bigquery.ScalarQueryParameter('session_id', 'INT64', session_id),
+            bigquery.ScalarQueryParameter('user_name', 'STRING', user_name),
             bigquery.ScalarQueryParameter('created_at', 'TIMESTAMP', ts),
             bigquery.ScalarQueryParameter('records_json', 'JSON', json.dumps(records)),
             bigquery.ScalarQueryParameter('counts_json', 'JSON', json.dumps(counts)),
@@ -78,10 +83,11 @@ class MistakeStore:
 
         query = f"""
         INSERT INTO `{self.table_fq}`
-          (session_id, created_at, records_json, counts_json, total_mistakes,
+          (session_id, user_name, created_at, records_json, counts_json, total_mistakes,
            level_cefr, level_confidence, level_method, level_window, level_explanation)
         VALUES (
           @session_id,
+          @user_name,
           @created_at,
           @records_json,
           @counts_json,
@@ -130,6 +136,91 @@ class MistakeStore:
                 'window_size': row.level_window,
                 'explanation': row.level_explanation,
             },
+        }
+
+    async def get_user_mistakes(
+        self,
+        user_name: str | None = None,
+        *,
+        since_days: int | None = 30,
+        limit_summaries: int = 10,
+    ) -> dict[str, Any]:
+        """
+        Aggregate mistakes across recent session summaries (no join to sessions).
+        Tries to filter by speaker_name or user_name columns if present in session_summaries.
+        """
+        return await asyncio.to_thread(
+            self._get_user_mistakes_sync, user_name, since_days, limit_summaries
+        )
+
+    def _get_user_mistakes_sync(
+        self,
+        user_name: str | None,
+        since_days: int | None,
+        limit_summaries: int,
+    ) -> dict[str, Any]:
+        params = [
+            bigquery.ScalarQueryParameter('limit', 'INT64', int(limit_summaries)),
+        ]
+        since_clause = ''
+        if since_days is not None:
+            params.append(bigquery.ScalarQueryParameter('since_days', 'INT64', int(since_days)))
+            since_clause = (
+                'AND created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @since_days DAY)'
+            )
+        rows = []
+        filtered_by_user = False
+        if user_name:
+            params_user = params + [
+                bigquery.ScalarQueryParameter('user_name', 'STRING', str(user_name))
+            ]
+            q_by_user = f"""
+            SELECT session_id, created_at, records_json
+            FROM `{self.table_fq}`
+            WHERE user_name = @user_name
+                {since_clause}
+            ORDER BY created_at DESC, session_id DESC
+            LIMIT @limit
+            """
+            rows = list(
+                self.client.query(
+                    q_by_user,
+                    job_config=bigquery.QueryJobConfig(query_parameters=params_user),
+                ).result()
+            )
+            filtered_by_user = True
+
+        # Merge/aggregate
+        all_records: list[dict[str, Any]] = []
+        type_counts: Counter[str] = Counter()
+        examples_by_type: defaultdict[str, list[str]] = defaultdict(list)
+
+        for row in rows:
+            recs = getattr(row, 'records_json', None)
+            if isinstance(recs, str):
+                recs = json.loads(recs)
+            if not isinstance(recs, list):
+                continue
+            for r in recs:
+                if not isinstance(r, dict):
+                    continue
+                all_records.append(r)
+                rtype = str(r.get('type') or r.get('category') or 'unknown')
+                type_counts[rtype] += 1
+                example = r.get('text') or r.get('example') or r.get('utterance') or ''
+                if example and len(examples_by_type[rtype]) < 3:
+                    examples_by_type[rtype].append(str(example)[:200])
+        by_type = [
+            {'type': t, 'count': c, 'examples': examples_by_type.get(t, [])}
+            for t, c in type_counts.most_common()
+        ]
+        return {
+            'filtered_by_user': filtered_by_user,
+            'user_name': user_name,
+            'total_summaries': len(rows),  # wording: session summaries
+            'total_records': len(all_records),
+            'by_type': by_type,
+            'records': all_records,
         }
 
     async def export_summary_json(self, json_path: str, session_id: int) -> Path:
