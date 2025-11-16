@@ -11,7 +11,7 @@ from tavily import TavilyClient
 
 from src.context.email import EmailClient
 from src.db.mistakes import MistakeStore
-from src.db.news import NewsStore
+from src.db.news import NewsStore, pick_article
 from src.db.speaker import VoiceIdentifier
 from src.llm.converse import ConversationService, get_time_appropriate_greeting
 from src.llm.prompt import PromptManager
@@ -81,6 +81,9 @@ class _ConvState(TypedDict, total=True):
     response: str | None
     lc_messages: list
 
+    # awaiting start session
+    awaiting_start: bool
+
 
 class ConversationAgent:
     def __init__(
@@ -111,6 +114,7 @@ class ConversationAgent:
 
         self.conversation_service = ConversationService(self.llm)
         self.email_client = email_client
+        self.news_store = news_store
 
         self.voice_identifier = voice_identifier
 
@@ -136,6 +140,31 @@ class ConversationAgent:
 
     def _build_graph(self):
         g = StateGraph(_ConvState)
+
+        @trace_node('confirm_interest')
+        async def confirm_interest(state: _ConvState) -> dict[str, Any]:
+            """
+            First gate: confirm interest in the proposed topic from entrypoint.
+            If user declines, set shutdown and return a short closing response.
+            """
+            if not state.get('awaiting_start'):
+                return {}
+
+            user_text = (state.get('user_text') or '').strip()
+
+            # check if the user is interested in the topic
+            response = await self.conversation_service.is_interested(user_text)
+
+            if response:
+                return {
+                    'awaiting_start': False,
+                }
+
+            # Treat anything else as a decline - shutdown
+            self.shutdown = True
+            return {
+                'response': "D'accord, on en parlera une autre fois. À bientôt!",
+            }
 
         @trace_node('identify_from_voice')
         async def identify_from_voice(state: _ConvState) -> dict[str, Any]:
@@ -359,6 +388,7 @@ class ConversationAgent:
             }
 
         # Nodes
+        g.add_node('confirm_interest', confirm_interest)
         g.add_node('identify_from_voice', identify_from_voice)
         g.add_node('confirm_identity', confirm_identity)
         g.add_node('extract_or_ask_name', extract_or_ask_name)
@@ -366,7 +396,8 @@ class ConversationAgent:
         g.add_node('call_tool', call_tool)
 
         # Edges
-        g.set_entry_point('identify_from_voice')
+        g.set_entry_point('confirm_interest')
+        g.add_edge('confirm_interest', 'identify_from_voice')
         g.add_edge('identify_from_voice', 'confirm_identity')
         g.add_edge('confirm_identity', 'extract_or_ask_name')
         g.add_edge('extract_or_ask_name', 'generate_response')
@@ -409,6 +440,7 @@ class ConversationAgent:
             'proposed_name': self.proposed_name,
             'response': None,
             'lc_messages': [],
+            'awaiting_start': True,
         }
 
         # Run the graph for this turn
@@ -421,6 +453,7 @@ class ConversationAgent:
         self.conversation_started = bool(
             result.get('conversation_started', self.conversation_started)
         )
+        self.awaiting_start = bool(result.get('awaiting_start', False))
 
         # Update history
         if text:
@@ -434,10 +467,31 @@ class ConversationAgent:
         self.conversation_started = False
         self._history = []
 
-    def say_hello(self) -> str:
-        return get_time_appropriate_greeting()
-
     def should_speak_response(self, response: str) -> bool:
         if not response or response.startswith('Error') or len(response.split()) > 200:
             return False
         return True
+
+    async def entrypoint_message(self) -> str:
+        """
+        Produce the initial message:
+        - Greeting
+        - Proposed news topic summary (LLM summarizes full article)
+        - Ask for interest
+        Always append this message to session history.
+        """
+        greet = get_time_appropriate_greeting()
+        article = await pick_article(self.news_store, limit=5)
+        if not article:
+            msg = f"{greet}\nJe n'ai pas trouvé d'article intéressant maintenant. De quoi voulez-vous parler ?"
+            # Always append to history
+            self._history.append({'role': 'assistant', 'content': msg})
+            return msg
+
+        # Summarize the full article via ConversationService
+        summary = await self.conversation_service.summarize_article(article)
+
+        # Always append this to the session history (assistant message)
+        self._history.append({'role': 'assistant', 'content': summary})
+
+        return summary

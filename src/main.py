@@ -84,8 +84,8 @@ class ConversationRunner:
     async def run(self, llm_client: AsyncLLMClient) -> None:
         try:
             # greet once
-            greeting = self.agent.say_hello()
-            await self.output_processor.output(greeting, llm_client, speak_allowed=True)
+            entry_message = await self.agent.entrypoint_message()
+            await self.output_processor.output(entry_message, llm_client, speak_allowed=True)
 
             # start listening after greeting
             if isinstance(self.input_processor, MicrophoneInputProcessor):

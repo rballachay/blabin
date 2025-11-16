@@ -2,12 +2,28 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import random
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
 from google.cloud import bigquery
+
+
+async def pick_article(news_store: NewsStore, limit: int = 5) -> dict | None:
+    """
+    Choose random article for seeding discussion from recent news.
+    """
+    recent = await news_store.recent_titles(limit=limit, source='radio-canada')
+
+    if not recent:
+        return None
+
+    recent_best = recent[random.randint(0, len(recent) - 1)]
+    article = await news_store.get_article(recent_best['id'])
+
+    return article
 
 
 class NewsStore:

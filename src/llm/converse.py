@@ -167,6 +167,64 @@ class ConversationService:
             out = out[:count]
         return out
 
+    async def summarize_article(self, article: dict[str, Any]) -> str:
+        """
+        Produce a concise, engaging French summary of the news article that sparks discussion.
+        Uses the full article text when available, with safety truncation to avoid overlong prompts.
+        Ends with a short question to invite the user to react.
+        """
+        title = (article.get('title') or '').strip()
+        text = (article.get('text') or '').strip()
+
+        # Safety clamp for very long articles (keep ~6k chars)
+        if text and len(text) > 6000:
+            text = text[:6000] + '...'
+
+        sys = (
+            'You are a concise French-speaking assistant. '
+            'Summarize the article in an interesting and clear way in no more than two sentences. '
+            'Highlight the main issue and explain why it matters to the reader. '
+            'Use a natural tone (not telegraphic). '
+            'Start by greeting the user and saying you found an interesting article from radio canada to discuss. '
+            'End with a short question that invites an opinion or reaction. '
+            'Do not add bullet points, tags, or artificial headings.'
+        )
+        user = f'Titre: {title or "Sans titre"}\nTexte:\n{text or title or ""}'
+
+        messages = [
+            {'role': 'system', 'content': sys},
+            {'role': 'user', 'content': user},
+        ]
+        summary = (await self._resp_text(messages)).strip()
+
+        return summary
+
+    async def is_interested(self, text: str) -> bool:
+        """
+        Return True if the user is engaging (any non-declining reply),
+        False if they indicate they don't want to chat now (e.g., 'no', 'pas maintenant', 'plus tard').
+        Empty/whitespace-only replies are treated as not engaged.
+        """
+        if not text or not text.strip():
+            return False
+
+        # If not an explicit decline, treat any content as engagement.
+        # Optionally, ask LLM for edge cases (comment out if you want zero LLM calls here).
+        sys = (
+            'Classify if the user is willing to chat right now. '
+            'Reply ENGAGE if they are responding or willing to chat (any non-declining reply). '
+            'Reply DECLINE if they indicate they do not want to chat now or prefer later. '
+            'Output exactly ENGAGE or DECLINE.'
+        )
+        messages = [
+            {'role': 'system', 'content': sys},
+            {'role': 'user', 'content': text},
+        ]
+        out = (await self._resp_text(messages)).strip().upper()
+        if out == 'DECLINE':
+            return False
+        return True
+
 
 def get_time_appropriate_greeting() -> str:
     hour = datetime.now().hour
