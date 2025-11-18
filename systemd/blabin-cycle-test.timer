@@ -1,0 +1,10 @@
+[Unit]
+Description=Test Timer for Fact Discussion Cycle Service
+
+[Timer]
+OnCalendar=*:0/30
+Persistent=true
+Unit=blabin-cycle.service
+
+[Install]
+WantedBy=timers.target

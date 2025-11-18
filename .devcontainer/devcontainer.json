@@ -27,9 +27,11 @@
         }
       }
   },
-  "postCreateCommand": "uv sync && pip install .[dev]",
+  "postCreateCommand": "sudo chmod 777 /var/run/docker.sock && uv sync && pip install .[dev]",
   "remoteUser": "vscode",
   "mounts": [
-    "source=${localEnv:HOME}/.config/pulse,target=/home/vscode/.config/pulse,type=bind"
+    "source=${localEnv:HOME}/.config/pulse,target=/home/vscode/.config/pulse,type=bind",
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+
   ]
 }

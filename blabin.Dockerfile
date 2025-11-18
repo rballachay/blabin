@@ -42,31 +42,11 @@ RUN apt-get update \
     && apt-get install -y google-cloud-cli \
     && apt-get install -y google-cloud-cli-cloud-run-proxy
 
-# Make the version configurable
-# https://github.com/hashicorp/terraform/releases
-ARG TERRAFORM_VERSION=1.13.5
-
-# Install Terraform as root user
-RUN curl -fsSL https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip -o /tmp/terraform.zip \
-  && unzip /tmp/terraform.zip -d /tmp \
-  && mv /tmp/terraform /usr/local/bin/ \
-  && rm -rf /tmp/* \
-  && terraform version
-
-# Install docker
-RUN curl -fsSL https://get.docker.com | sh
-
 # Switch to non-root user
 USER $USERNAME
 
-# Install auto-completions for non-root user
-RUN terraform -install-autocomplete
-
 # Install uv for the user
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# connect docker to audio
-ENV PULSE_SERVER=docker.for.mac.localhost:4713
 
 # Add user's .local/bin to path for uv
 ENV PATH="/home/$USERNAME/.local/bin:${PATH}"

@@ -1,0 +1,32 @@
+services:
+  blabin:
+    build:
+      context: .
+      dockerfile: blabin.Dockerfile
+    container_name: controller
+    env_file:
+      - .env
+    environment:
+      - TZ=${TZ:-Etc/UTC}
+      - MLFLOW_URI_LOCAL=http://mlflow-proxy:8081
+    command: ["/usr/local/scripts/entrypoint.sh"]
+    volumes:
+      - ./:/app:ro
+    depends_on:
+      - mlflow-proxy
+    restart: unless-stopped
+    # platform: linux/arm64/v8
+
+  mlflow-proxy:
+    build:
+      context: .
+      dockerfile: mlflow.Dockerfile
+    container_name: mlflow-proxy
+    env_file:
+      - .env
+    environment:
+      - SERVICE=mlflow
+      - PORT=8081
+    ports:
+      - "8081:8081"
+    restart: unless-stopped
