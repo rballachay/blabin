@@ -8,12 +8,9 @@ services:
       - .env
     environment:
       - TZ=${TZ:-Etc/UTC}
-      - MLFLOW_URI_LOCAL=http://mlflow-proxy:8081
-    command: ["/usr/local/scripts/entrypoint.sh"]
-    volumes:
-      - ./:/app:ro
-    depends_on:
-      - mlflow-proxy
+      - MLFLOW_URI_LOCAL=http://127.0.0.1:8081
+    command: ["/app/scripts/blabin-entrypoint.sh"]
+    network_mode: "service:mlflow-proxy"
     restart: unless-stopped
     # platform: linux/arm64/v8
 
@@ -27,6 +24,7 @@ services:
     environment:
       - SERVICE=mlflow
       - PORT=8081
+      - BIND_ADDRESS=0.0.0.0
     ports:
       - "8081:8081"
     restart: unless-stopped

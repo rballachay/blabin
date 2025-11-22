@@ -13,11 +13,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl build-essential tzdata portaudio19-dev python3-pyaudio unzip pulseaudio-utils gnupg \
+ && rm -rf /var/lib/apt/lists/*
+
+
 # Install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Set working directory
-WORKDIR /workspaces/app
+WORKDIR /app
 
 # Create a non-root user for development
 ARG USERNAME=vscode
@@ -30,6 +35,7 @@ RUN groupadd --gid $USER_GID $USERNAME \
     &&  apt-get -y install portaudio19-dev \
     && apt install -y python3-pyaudio \
     && apt install -y unzip \
+    && apt install -y tzdata \
     && apt install -y pulseaudio-utils \
     && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME
@@ -42,6 +48,10 @@ RUN apt-get update \
     && apt-get install -y google-cloud-cli \
     && apt-get install -y google-cloud-cli-cloud-run-proxy
 
+# Install supercronic for cronjobs
+RUN curl -L -o /usr/local/bin/supercronic \
+https://github.com/aptible/supercronic/releases/latest/download/supercronic-linux-amd64
+
 # Switch to non-root user
 USER $USERNAME
 
@@ -50,3 +60,19 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Add user's .local/bin to path for uv
 ENV PATH="/home/$USERNAME/.local/bin:${PATH}"
+
+# copy the source in the container - don't mount, as it causes problems with macOS permissions
+RUN sudo chown -R $USERNAME:$USERNAME /app
+COPY --chown=$USERNAME:$USERNAME pyproject.toml /app/pyproject.toml
+COPY --chown=$USERNAME:$USERNAME ./uv.lock /app/uv.lock
+
+# sync dependencies
+RUN uv sync
+
+# copy the rest of the files
+COPY --chown=$USERNAME:$USERNAME ./scripts /app/scripts
+COPY --chown=$USERNAME:$USERNAME ./src /app/src
+COPY --chown=$USERNAME:$USERNAME ./prompts /app/prompts
+
+RUN sudo chmod +x /app/scripts/blabin-entrypoint.sh
+RUN sudo chmod +x /usr/local/bin/supercronic

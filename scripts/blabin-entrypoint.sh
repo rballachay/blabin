@@ -1,16 +1,13 @@
 #!/bin/bash
+set -euo pipefail
 
-# Set the timezone to local time
-echo "Setting timezone to local time..."
-ln -sf /usr/share/zoneinfo/$(cat /etc/timezone) /etc/localtime
+mkdir -p /app/logs
 
-# Start the Prometheus metrics server
-echo "Starting Prometheus metrics server..."
-python3 -m src.metrics.server &
+# Set timezone if TZ provided
+if [[ -n "${TZ:-}" && -f "/usr/share/zoneinfo/${TZ}" ]]; then
+  sudo ln -sf "/usr/share/zoneinfo/${TZ}" /etc/localtime || true
+  echo "${TZ}" | sudo tee /etc/timezone >/dev/null || true
+fi
 
-# Start the systemd service for the main application
-echo "Starting blabin-cycle service..."
-systemctl start blabin-cycle.service
-
-# Keep the script running to maintain the container's active state
-tail -f /dev/null
+echo "Starting scheduler with supercronic..."
+exec /usr/local/bin/supercronic -quiet /app/scripts/blabin.cron
