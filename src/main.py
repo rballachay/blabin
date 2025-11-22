@@ -9,6 +9,8 @@ import numpy as np
 import pyaudio
 import torch
 from dotenv import load_dotenv
+from google.auth.transport.requests import Request
+from google.oauth2 import service_account
 from tavily import TavilyClient
 
 from src.context.email import EmailClient
@@ -43,9 +45,15 @@ LOG_AUDIO = False
 load_dotenv()
 
 # attempt to set up mlflow autolog
-MLFLOW_URI_LOCAL = os.getenv('MLFLOW_URI_LOCAL', './mlruns')
+MLFLOW_URI = os.getenv('MLFLOW_URI', './mlruns')
 MLFLOW_EXPERIMENT = os.getenv('MLFLOW_EXPERIMENT', 'blabin-development')
-init_mlflow_autolog(MLFLOW_URI_LOCAL, MLFLOW_EXPERIMENT)
+GOOGLE_SERVICE_FILE = os.getenv('GOOGLE_SERVICE_FILE', './.creds/gcp-sa-key.json')
+id_creds = service_account.IDTokenCredentials.from_service_account_file(
+    GOOGLE_SERVICE_FILE, target_audience=MLFLOW_URI
+)
+id_creds.refresh(Request())
+os.environ['MLFLOW_TRACKING_TOKEN'] = str(id_creds.token)
+init_mlflow_autolog(MLFLOW_URI, MLFLOW_EXPERIMENT, str(id_creds.token))
 
 # Audio playback constants
 FORMAT = pyaudio.paInt16

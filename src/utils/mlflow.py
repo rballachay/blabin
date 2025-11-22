@@ -1,4 +1,3 @@
-import json
 import logging
 import socket
 from urllib.parse import urlparse
@@ -13,41 +12,27 @@ def _is_http_url(uri: str) -> bool:
     return parsed.scheme in ('http', 'https')
 
 
-def _probe_http_server(tracking_uri: str, timeout: float = 3.0) -> bool:
+def _auth_headers(tok) -> dict[str, str]:
+    return {'Authorization': f'Bearer {tok}'}
+
+
+def _probe_http_server(tracking_uri: str, mlflow_token: str, timeout: float = 3.0) -> bool:
     """
     Probe an MLflow server:
     1) GET root UI
-    2) POST experiments/list (MLflow REST)
     Consider 2xx/3xx as up.
     """
     base = tracking_uri.rstrip('/') or tracking_uri
+    headers = _auth_headers(mlflow_token)
 
     # Attempt 1: GET root
     try:
         if requests:
-            r = requests.get(base + '/', timeout=timeout, allow_redirects=True)
+            r = requests.get(base + '/', timeout=timeout, allow_redirects=True, headers=headers)
             if 200 <= r.status_code < 400:
                 return True
         else:
-            req = Request(base + '/', method='GET')
-            with urlopen(req, timeout=timeout) as resp:
-                if 200 <= resp.status < 400:
-                    return True
-    except Exception:
-        pass
-
-    # Attempt 2: POST experiments/list
-    try:
-        endpoint = base + '/api/2.0/mlflow/experiments/list'
-        if requests:
-            r = requests.post(endpoint, json={}, timeout=timeout)
-            if 200 <= r.status_code < 400:
-                return True
-        else:
-            data = json.dumps({}).encode('utf-8')
-            req = Request(
-                endpoint, data=data, method='POST', headers={'Content-Type': 'application/json'}
-            )
+            req = Request(base + '/', method='GET', headers=headers)
             with urlopen(req, timeout=timeout) as resp:
                 if 200 <= resp.status < 400:
                     return True
@@ -57,7 +42,7 @@ def _probe_http_server(tracking_uri: str, timeout: float = 3.0) -> bool:
     return False
 
 
-def _is_mlflow_server_up(tracking_uri: str, timeout: float = 3.0) -> bool:
+def _is_mlflow_server_up(tracking_uri: str, mlflow_token: str, timeout: float = 3.0) -> bool:
     """
     Return True if the MLflow tracking server at tracking_uri responds.
     For non-HTTP(S) URIs (e.g., local file store paths or file://), returns True.
@@ -67,12 +52,13 @@ def _is_mlflow_server_up(tracking_uri: str, timeout: float = 3.0) -> bool:
 
     # Avoid long DNS hangs
     socket.setdefaulttimeout(timeout)
-    return _probe_http_server(tracking_uri, timeout=timeout)
+    return _probe_http_server(tracking_uri, mlflow_token, timeout=timeout)
 
 
 def init_mlflow_autolog(
     tracking_uri: str,
     experiment_name: str,
+    mlflow_token: str,
     probe_timeout: float = 10.0,
 ) -> str | None:
     """
@@ -86,7 +72,7 @@ def init_mlflow_autolog(
             'Tracking URI not set; set MLFLOW_URI_LOCAL (see terraform/mlflow/README.md).'
         )
 
-    if not _is_mlflow_server_up(tracking_uri, timeout=probe_timeout):
+    if not _is_mlflow_server_up(tracking_uri, mlflow_token, timeout=probe_timeout):
         raise RuntimeError(f"MLflow server not reachable at '{tracking_uri}' (probe failed).")
 
     mlflow.set_tracking_uri(tracking_uri)

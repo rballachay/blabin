@@ -73,6 +73,7 @@ RUN uv sync
 COPY --chown=$USERNAME:$USERNAME ./scripts /app/scripts
 COPY --chown=$USERNAME:$USERNAME ./src /app/src
 COPY --chown=$USERNAME:$USERNAME ./prompts /app/prompts
+COPY --chown=$USERNAME:$USERNAME ./.creds/ /app/.creds/
 
 RUN sudo chmod +x /app/scripts/blabin-entrypoint.sh
 RUN sudo chmod +x /usr/local/bin/supercronic

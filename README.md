@@ -48,6 +48,37 @@ SENDGRID_API_KEY=SG.xxxxx
 SENDER_EMAIL=<your_verified_single_sender@example.com>
 ```
 
+## Service Account Credentials (Non‑Interactive Auth)
+
+Create a dedicated service account so the app and MLflow proxy can access GCP APIs without manual gcloud login.
+
+1. Choose roles (minimum):
+   - BigQuery: roles/bigquery.user
+   - Cloud Run (if proxying MLflow): roles/run.viewer roles/run.invoker
+   - (If MLflow artifacts in GCS): roles/storage.objectViewer
+   Add more only if required.
+
+2. Create the service account and key (run on host shell):
+```sh
+SA_NAME=blabin-app
+PROJECT_ID=<YOUR_GCP_PROJECT_ID>
+
+gcloud iam service-accounts create $SA_NAME \
+  --display-name "Blabin Application" \
+  --project $PROJECT_ID
+
+for role in roles/bigquery.user roles/run.viewer roles/run.invoker roles/storage.objectViewer; do
+  gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com" \
+    --role="$role"
+done
+
+mkdir -p .creds
+gcloud iam service-accounts keys create .creds/gcp-sa-key.json \
+  --iam-account "${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --project $PROJECT_ID
+```
+
 ## Infrastructure (Terraform)
 Set up cloud resources using the READMEs in the terraform folders:
 - Environment resources (BigQuery, etc.): see terraform/README.md
@@ -73,9 +104,10 @@ BIGQUERY_DATASET=dev_blabin
 BIGQUERY_LOCATION=US
 GOOGLE_CLOUD_PROJECT=<GOOGLE_CLOUD_PROJECT>
 GOOGLE_CLOUD_QUOTA_PROJECT=<GOOGLE_CLOUD_PROJECT>
+GOOGLE_SERVICE_FILE=./.creds/gcp-sa-key.json
 
 # settings for mlflow
-MLFLOW_URI_LOCAL=http://127.0.0.1:8081
+MLFLOW_URI=https://some-mlflow.a.run.app
 MLFLOW_EXPERIMENT=blabin-development
 
 # tavily search config
