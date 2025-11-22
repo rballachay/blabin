@@ -11,3 +11,7 @@ services:
     command: ["/app/scripts/blabin-entrypoint.sh"]
     restart: unless-stopped
     # platform: linux/arm64/v8
+
+    # just for testing on MAC
+    volumes:
+      - /Users/RileyBallachay/.config/pulse:/home/vscode/.config/pulse:ro

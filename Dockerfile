@@ -74,5 +74,8 @@ COPY --chown=$USERNAME:$USERNAME ./scripts /app/scripts
 COPY --chown=$USERNAME:$USERNAME ./src /app/src
 COPY --chown=$USERNAME:$USERNAME ./prompts /app/prompts
 
+# connect docker to audio
+ENV PULSE_SERVER=docker.for.mac.localhost:4713
+
 RUN sudo chmod +x /app/scripts/blabin-entrypoint.sh
 RUN sudo chmod +x /usr/local/bin/supercronic
