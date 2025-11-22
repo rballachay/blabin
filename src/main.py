@@ -47,9 +47,11 @@ load_dotenv()
 # attempt to set up mlflow autolog
 MLFLOW_URI = os.getenv('MLFLOW_URI', './mlruns')
 MLFLOW_EXPERIMENT = os.getenv('MLFLOW_EXPERIMENT', 'blabin-development')
-GOOGLE_SERVICE_FILE = os.getenv('GOOGLE_SERVICE_FILE', './.creds/gcp-sa-key.json')
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv(
+    'GOOGLE_APPLICATION_CREDENTIALS', './.creds/gcp-sa-key.json'
+)
 id_creds = service_account.IDTokenCredentials.from_service_account_file(
-    GOOGLE_SERVICE_FILE, target_audience=MLFLOW_URI
+    GOOGLE_APPLICATION_CREDENTIALS, target_audience=MLFLOW_URI
 )
 id_creds.refresh(Request())
 os.environ['MLFLOW_TRACKING_TOKEN'] = str(id_creds.token)

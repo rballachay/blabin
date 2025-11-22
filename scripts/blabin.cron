@@ -1,5 +1,5 @@
 # Run at 10,12,14,16,18 local time (set TZ env in compose)
-# 0 10-18/2 * * * cd /app && uv run -m src.main >> /app/logs/run.log 2>&1
+# 0 10-18/2 * * * cd /app && uv run -m src.main --microphone >> /app/logs/run.log 2>&1
 
 # testing version
-* * * * * cd /app && uv run -m src.main >> /app/logs/run.log 2>&1
+* * * * * cd /app && uv run -m src.main --microphone >> /app/logs/run.log 2>&1

@@ -77,6 +77,11 @@ mkdir -p .creds
 gcloud iam service-accounts keys create .creds/gcp-sa-key.json \
   --iam-account "${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com" \
   --project $PROJECT_ID
+
+## IMPORTANT: GRANT DATA OWNERSHIP TO SERVICE ACCOUNT
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:$SA_EMAIL" \
+  --role="roles/bigquery.dataOwner"
 ```
 
 ## Infrastructure (Terraform)
@@ -104,7 +109,7 @@ BIGQUERY_DATASET=dev_blabin
 BIGQUERY_LOCATION=US
 GOOGLE_CLOUD_PROJECT=<GOOGLE_CLOUD_PROJECT>
 GOOGLE_CLOUD_QUOTA_PROJECT=<GOOGLE_CLOUD_PROJECT>
-GOOGLE_SERVICE_FILE=./.creds/gcp-sa-key.json
+GOOGLE_APPLICATION_CREDENTIALS=./.creds/gcp-sa-key.json
 
 # settings for mlflow
 MLFLOW_URI=https://some-mlflow.a.run.app
