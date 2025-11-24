@@ -319,3 +319,31 @@ resource "google_bigquery_table" "speakers" {
 
   clustering = ["id"]
 }
+
+resource "google_artifact_registry_repository" "blabin_registry" {
+  provider      = google
+  location      = var.region
+  repository_id = "blabin-containers"
+  description   = "Docker images for Blabin app"
+  format        = "DOCKER"
+  labels = {
+    environment = var.environment
+    app         = "blabin"
+  }
+}
+
+resource "google_artifact_registry_repository_iam_member" "blabin_registry_writer" {
+  project    = var.project_id
+  location   = var.region
+  repository = google_artifact_registry_repository.blabin_registry.repository_id
+  role       = "roles/artifactregistry.writer"
+  member     = "serviceAccount:${var.service_account_email}"
+}
+
+resource "google_artifact_registry_repository_iam_member" "blabin_registry_reader" {
+  project    = var.project_id
+  location   = var.region
+  repository = google_artifact_registry_repository.blabin_registry.repository_id
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:${var.service_account_email}"
+}

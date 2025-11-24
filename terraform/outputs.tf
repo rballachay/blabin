@@ -48,6 +48,11 @@ output "python_config" {
   }
 }
 
+output "container_registry_url" {
+  description = "Artifact Registry Docker repository URL"
+  value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.blabin_registry.repository_id}"
+}
+
 output "summary" {
   description = "Deployment summary"
   value = <<-EOT
