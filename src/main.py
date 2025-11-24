@@ -129,7 +129,7 @@ class ConversationRunner:
                     await self.output_processor.output(
                         response,
                         llm_client,
-                        speak_allowed=self.agent.should_speak_response(response),
+                        speak_allowed=True,  # causes trouble when set to false
                     )
 
                     if isinstance(self.input_processor, MicrophoneInputProcessor):

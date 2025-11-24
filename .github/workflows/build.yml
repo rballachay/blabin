@@ -1,0 +1,45 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Decode GCP service account key
+        run: |
+          echo "${{ secrets.GCP_SA_KEY_B64 }}" | base64 -d > "${HOME}/gcp-sa-key.json"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: '${{ secrets.GCP_SA_KEY_B64 }}'
+          token_format: 'access_token'
+
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ secrets.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build Docker image with Compose
+        run: |
+          docker compose build blabin
+
+      - name: Tag Docker image
+        run: |
+          IMAGE="${{ secrets.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${GITHUB_REF_NAME}"
+          docker tag blabin-blabin $IMAGE
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Push Docker image
+        run: |
+          docker push $IMAGE
