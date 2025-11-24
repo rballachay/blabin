@@ -1,6 +1,6 @@
 # Terraform (env resources)
 
-This folder contains the environment-scoped Terraform (e.g., BigQuery datasets and related IAM). The MLflow server lives in a separate Terraform root at terraform/mlflow.
+This folder contains the environment-scoped Terraform (e.g., BigQuery datasets and related IAM).
 
 ## Prerequisites
 - Google Cloud project with billing enabled
@@ -20,7 +20,7 @@ BIGQUERY_LOCATION=US
 
 ## 2) Create dev.tfvars from the template
 ```sh
-cd terraform
+cd platform
 cp dev.template.tfvars dev.tfvars
 # Edit dev.tfvars:
 #   project_id           = "<your-gcp-project-id>"
@@ -42,7 +42,7 @@ gcloud config set project "$GOOGLE_CLOUD_PROJECT"
 
 ## 4) Apply the Terraform
 ```sh
-cd terraform
+cd platform
 terraform init
 terraform apply -var-file=dev.tfvars
 # Review and type 'yes'
@@ -59,6 +59,3 @@ Update your repo .env as needed (e.g., BIGQUERY_DATASET, locations).
 ```sh
 terraform destroy -var-file=dev.tfvars
 ```
-
-## MLflow (separate stack)
-To provision the MLflow tracking server (Cloud Run + Cloud SQL + GCS), follow terraform/mlflow/README.md. That stack builds a Docker image, pushes it to Artifact Registry, and deploys MLflow with Terraform.

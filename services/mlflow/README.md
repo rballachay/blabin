@@ -23,7 +23,7 @@ OWNER_EMAIL=you@yourdomain.com
 
 ## 2) Create mlflow.tfvars from the template
 ```sh
-cd terraform/mlflow
+cd terraform
 cp mlflow.template.tfvars mlflow.tfvars
 # Edit mlflow.tfvars:
 #   project_id, region, sql_region, bucket_location
@@ -43,7 +43,6 @@ gcloud config set project "$GCP_PROJECT_ID"
 The provided script reads .env and creates the Artifact Registry repo (if needed), grants permissions, then builds and pushes the image.
 
 ```sh
-cd terraform/mlflow
 chmod +x build.sh
 ./build.sh
 ```
@@ -57,7 +56,6 @@ Make sure mlflow_image in mlflow.tfvars matches that value.
 
 ## 5) Deploy with Terraform
 ```sh
-cd terraform/mlflow
 terraform init
 terraform apply -var-file=mlflow.tfvars
 ```
@@ -74,15 +72,6 @@ Once build, you can use the following to access the mlflow server.
 URL=$(terraform output -raw mlflow_url)
 export MLFLOW_TRACKING_URI="$URL"
 export MLFLOW_TRACKING_TOKEN=$(gcloud auth print-identity-token --audiences="$URL")
-```
-
-Browse via a local proxy (no manual token needed):
-```sh
-cd terraform/mlflow
-chmod +x open.sh
-./open.sh
-# then open:
-"$BROWSER" http://localhost:8081
 ```
 
 ## Notes

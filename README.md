@@ -86,8 +86,8 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
 
 ## Infrastructure (Terraform)
 Set up cloud resources using the READMEs in the terraform folders:
-- Environment resources (BigQuery, etc.): see terraform/README.md
-- MLflow tracking server (Cloud Run + Cloud SQL + GCS): see terraform/mlflow/README.md
+- Environment resources (BigQuery, etc.): see platform/README.md
+- MLflow tracking server (Cloud Run + Cloud SQL + GCS): see services/mlflow/README.md
 
 Those guides cover creating tfvars from templates, enabling services, building/pushing the MLflow Docker image, and applying Terraform.
 
@@ -123,15 +123,6 @@ SENDGRID_API_KEY=<SENDGRID_API_KEY>
 SENDGRID_EMAIL=<SENDGRID_EMAIL>
 ```
 
-## Using MLflow
-- Provision the remote MLflow server by following terraform/mlflow/README.md.
-- To browse the UI locally without manually handling tokens, use the proxy:
-```sh
-cd terraform/mlflow
-chmod +x open.sh
-./open.sh
-"$BROWSER" http://localhost:8081
-```
 
 ## Run the application (chat mode)
 ```sh
