@@ -21,10 +21,9 @@ jobs:
           echo "${{ secrets.GCP_SA_KEY_B64 }}" | base64 -d > "${HOME}/gcp-sa-key.json"
 
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@v3
         with:
-          credentials_json: '${{ secrets.GCP_SA_KEY_B64 }}'
-          token_format: 'access_token'
+          credentials_json: '${{ secrets.GCP_SA_KEY }}'
 
       - name: Configure Docker for Artifact Registry
         run: |
