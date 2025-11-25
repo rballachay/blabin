@@ -4,9 +4,8 @@ from collections.abc import AsyncGenerator
 
 import librosa
 import numpy as np
-import torch
 
-torch.set_num_threads(1)
+from src.models.vad import VADModelProtocol
 
 # VAD model constants
 TARGET_SR = 16000
@@ -30,7 +29,7 @@ class AsyncVAD:
 
     def __init__(
         self,
-        model: torch.nn.Module,
+        model: VADModelProtocol,
         *,
         target_sr: int = TARGET_SR,
         frame_size: int = NUM_SAMPLES,
@@ -67,9 +66,8 @@ class AsyncVAD:
         self._idle_since = time.monotonic()
 
     async def _frame_confidence(self, frame: np.ndarray) -> float:
-        tensor = torch.from_numpy(frame.astype(np.float32))
-        result = await asyncio.to_thread(self.model, tensor, self.target_sr)
-        return float(result.item())
+        result = await asyncio.to_thread(self.model, frame, self.target_sr)
+        return result
 
     def _frame_to_segment_samples(self, start_idx: int, end_idx: int) -> np.ndarray:
         # apply padding

@@ -4,3 +4,6 @@ librosa
 numpy
 torch
 asyncio
+resemblyzer>=0.1.4
+silero-vad>=6.0.0
+torchaudio==2.8.0 # Anything above 2.9.0 breaks silero-vad

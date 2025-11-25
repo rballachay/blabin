@@ -26,14 +26,11 @@ dependencies = [
     "httpx>=0.27.0",             # Keep if example tool might use HTTP later
     "google-genai>=1.46.0",      # Necessary for accessing gemini
     "pyaudio>=0.2.14",           # Required for recording audio
-    "torchaudio==2.8.0",         # Anything above 2.9.0 breaks silero-vad
-    "silero-vad>=6.0.0",         # Voice activity detection w pytorch
     "librosa>=0.11.0",           # used for sample rate change
     "langchain>=1.0.2",          # Agent
     "langchain-community>=0.4",
     "langchain-google-genai>=3.0.0",
     "mlflow>=3.5.1",
-    "resemblyzer>=0.1.4",
     "feedparser>=6.0.12",
     "bs4>=0.0.2",
     "google-cloud-bigquery>=3.38.0",
@@ -56,7 +53,10 @@ dev = [
     "types-requests",          # If using httpx
     "pytest_asyncio",
     "types-pyyaml",
-    "types-protobuf"
+    "types-protobuf",
+    "resemblyzer>=0.1.4",
+    "silero-vad>=6.0.0",         # Voice activity detection w pytorch
+    "torchaudio==2.8.0",         # Anything above 2.9.0 breaks silero-vad
     # Add other dev dependencies here if needed
 ]
 

@@ -12,8 +12,24 @@ from typing import Any
 
 import numpy as np
 from google.cloud import bigquery
-from resemblyzer import VoiceEncoder, normalize_volume
-from resemblyzer.hparams import audio_norm_target_dBFS
+
+from src.models.voice import VoiceEmbeddingModelProtocol
+
+# imported from resemblyzer.hparams
+audio_norm_target_dBFS = -30
+int16_max = (2**15) - 1
+
+
+# imported from resemblyzer.audio
+def normalize_volume(wav, target_dBFS, increase_only=False, decrease_only=False):
+    if increase_only and decrease_only:
+        raise ValueError('Both increase only and decrease only are set')
+    rms = np.sqrt(np.mean((wav * int16_max) ** 2))
+    wave_dBFS = 20 * np.log10(rms / int16_max)
+    dBFS_change = target_dBFS - wave_dBFS
+    if dBFS_change < 0 and increase_only or dBFS_change > 0 and decrease_only:
+        return wav
+    return wav * (10 ** (dBFS_change / 20))
 
 
 @dataclass
@@ -27,7 +43,14 @@ class Speaker:
 
 
 class VoiceIdentifier:
-    def __init__(self, project: str, dataset: str, confidence: float = 0.5, **kwargs):
+    def __init__(
+        self,
+        model: VoiceEmbeddingModelProtocol,
+        project: str,
+        dataset: str,
+        confidence: float = 0.5,
+        **kwargs,
+    ):
         """
         kwargs can include project/dataset for BigQuery.
         db_path is ignored (kept for API compat).
@@ -38,7 +61,7 @@ class VoiceIdentifier:
             project=project,
             dataset=dataset,
         )
-        self.model = VoiceEncoder()
+        self.model = model
         self.confidence = confidence
 
     async def confirm_and_update(

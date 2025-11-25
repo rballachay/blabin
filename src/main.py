@@ -7,7 +7,6 @@ from typing import cast
 
 import numpy as np
 import pyaudio
-import torch
 from dotenv import load_dotenv
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
@@ -30,6 +29,8 @@ from src.llm.agent import ConversationAgent
 from src.llm.mistakes import analyze_session
 from src.llm.prompt import PromptManager
 from src.llm.speech import AsyncLLMClient
+from src.models.vad import LocalVADModel, RemoteVADModel
+from src.models.voice import LocalVoiceEmbeddingModel, RemoteVoiceEmbeddingModel
 from src.utils.audiolog import AudioTurnLogger
 from src.utils.mlflow import init_mlflow_autolog
 from src.utils.session import StatsAccumulator
@@ -223,6 +224,28 @@ async def refresh_context(news_store: NewsStore) -> None:
         print(f'[info] news up-to-date (last fetch {age_min} min ago); skipping refresh')
 
 
+def build_vad_and_voice(endpoint: str | None):
+    """
+    Choose remote wrappers if health OK else fall back local.
+    """
+    if not endpoint:
+        print('[info] No VOICE_SERVICE_ENDPOINT; using local models.')
+        return LocalVADModel(), LocalVoiceEmbeddingModel()
+
+    # Probe health
+    try:
+        import httpx
+
+        r = httpx.get(f'{endpoint.rstrip("/")}/health', timeout=2.0)
+        if r.status_code == 200:
+            print('[info] Remote voice service healthy; using remote models.')
+            return RemoteVADModel(endpoint), RemoteVoiceEmbeddingModel(endpoint)
+        raise RuntimeError(f'health status {r.status_code}')
+    except Exception as e:
+        print(f'[warn] Remote service unavailable ({e}); falling back local.')
+        return LocalVADModel(), LocalVoiceEmbeddingModel()
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description='Conversation runner')
     parser.add_argument(
@@ -249,11 +272,16 @@ async def main() -> None:
     news_store = NewsStore(project=google_cloud_project, dataset=bigquery_dataset)
     await refresh_context(news_store)
 
+    # load voice identifier + VAD
+    if not use_text_mode:
+        voice_endpoint = os.getenv('VOICE_SERVICE_ENDPOINT')
+        vad_model, voice_model = build_vad_and_voice(voice_endpoint)
+
     # LLM + services
     gemini_key = os.getenv('GEMINI_API_KEY', '')
     llm_client = AsyncLLMClient(api_key=gemini_key)
     voice_identifier = VoiceIdentifier(
-        project=google_cloud_project, dataset=bigquery_dataset, confidence=0.5
+        model=voice_model, project=google_cloud_project, dataset=bigquery_dataset, confidence=0.5
     )
 
     # handles prompts + session data
@@ -287,9 +315,8 @@ async def main() -> None:
     # Build input processor
     if not use_text_mode:
         # init VAD only for audio mode
-        model, _ = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad')
         vad = AsyncVAD(
-            model,
+            vad_model,
             threshold=0.7,
             min_speech_duration_ms=1000,
             min_silence_duration_ms=1000,
