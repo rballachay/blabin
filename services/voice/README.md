@@ -21,14 +21,6 @@ docker run -d --name blabin-voice -p 8000:8000 blabin-voice:latest
 $BROWSER http://localhost:8000/docs
 ```
 
-Container-to-container (same network):
-```bash
-docker network create blabin-net
-docker run -d --name voice --network blabin-net -p 8000:8000 blabin-voice:latest
-# from another container:
-curl http://voice:8000/health
-```
-
 ## Build/Tag/Push script
 Requires a GCP service account JSON and Artifact Registry repo.
 

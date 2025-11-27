@@ -48,10 +48,19 @@ resource "google_cloud_run_service" "fastapi_service" {
 
   template {
     spec {
+      container_concurrency = 1
+
       containers {
         image = "${var.region}-docker.pkg.dev/${var.project_id}/fastapi-containers/blabin-voice:latest"
         ports {
           container_port = 8000
+        }
+
+        resources {
+          limits = {
+            memory = "2Gi"
+            cpu    = "2"
+          }
         }
       }
     }
