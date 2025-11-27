@@ -49,9 +49,9 @@ resource "google_cloud_run_service" "fastapi_service" {
   template {
     spec {
       containers {
-        image = "${var.region}-docker.pkg.dev/${var.project_id}/fastapi-containers/fastapi:latest"
+        image = "${var.region}-docker.pkg.dev/${var.project_id}/fastapi-containers/blabin-voice:latest"
         ports {
-          container_port = 80
+          container_port = 8000
         }
       }
     }

@@ -2,7 +2,8 @@ fastapi
 uvicorn
 librosa
 numpy
-torch
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.8.0+cpu
 asyncio
 resemblyzer>=0.1.4
 silero-vad>=6.0.0
