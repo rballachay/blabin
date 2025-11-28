@@ -1,6 +1,62 @@
 # blabin
 Adaptive agent for helping me learn French faster
 
+## Introduction
+
+## Design
+
+The diagram shows a simple flow from development to runtime: GitHub Actions builds the voice service and the Python app images and pushes them to Artifact Registry in Google Cloud, while Terraform provisions the cloud side resources such as Artifact Registry, Cloud Run for the voice API, BigQuery, IAM, MLflow tracking, and Cloud Logging. At the edge, the Python app container is pulled from Artifact Registry and runs scheduled tasks via cron to fetch mistakes from BigQuery and track metrics to MLflow, while the user can speak to the voice agent; the edge app streams audio frames to the Cloud Run voice service over HTTP for VAD and embeddings and uses the responses to drive the interaction.
+
+```mermaid
+graph TD
+  DevIDE[Developer VS Code Dev Container] -->|commit and push| GH[GitHub Actions CI]
+  GH -->|docker build and push| GAR[Artifact Registry Repo]
+  DevIDE -->|terraform apply| TF[Terraform]
+
+  subgraph GCP Google Cloud Platform
+    GAR:::gcp
+    BQ[BigQuery Dataset and Tables]:::gcp
+    CR[Cloud Run Voice Service]:::gcp
+    IAM[IAM Roles and Bindings]:::gcp
+    MLF[MLflow Tracking Server]:::gcp
+    Logs[Cloud Logging]:::gcp
+
+    TF --> GAR
+    TF --> BQ
+    TF --> CR
+    TF --> IAM
+    TF --> MLF
+
+    IAM --> CR
+    IAM --> GAR
+    IAM --> BQ
+    IAM --> MLF
+  end
+
+  subgraph Voice Service Cloud Run in GCP
+    CR -->|HTTP JSON| VAD[FastAPI endpoints health vad embed]
+    VAD --> Silero[Silero VAD torch hub]
+    VAD --> Resemb[Resemblyzer]
+  end
+
+  subgraph App Container Python
+    GAR --> | Kubernetes pull image | Cron
+    Cron[Cron scheduled] --> MainJob[Python main tasks]
+    MainJob -->|fetch mistakes| BQ
+    MainJob -->|store summaries| BQ
+    MainJob -->|LLM augment and problems| Gemini[Gemini API]
+    MainJob -->|remote VAD| CR
+    MainJob -->|track metrics| MLF
+    MainJob -->|email| Email[EmailClient SendGrid]
+    MainJob -->|docs output| Docs[docs text md]
+  end
+
+  CR --> Logs
+  MLF --> UI[MLflow UI]
+
+  classDef gcp fill:#e3f2fd,stroke:#1a73e8,stroke-width:1px,color:#1a73e8;
+```
+
 ## Prerequisites
 - Use the dev container for this workspace (gcloud CLI is preinstalled).
 - A Google Cloud project with billing enabled
