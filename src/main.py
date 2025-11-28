@@ -37,7 +37,7 @@ from src.utils.session import StatsAccumulator
 from src.vad.async_vad import AsyncVAD
 
 # GEMINI TTS only has 15 calls/day, disable for development
-SPEAK_OUTPUT = True
+SPEAK_OUTPUT = False
 
 # optionally log audio for debugging
 LOG_AUDIO = False
@@ -272,10 +272,9 @@ async def main() -> None:
     news_store = NewsStore(project=google_cloud_project, dataset=bigquery_dataset)
     await refresh_context(news_store)
 
-    # load voice identifier + VAD
-    if not use_text_mode:
-        voice_endpoint = os.getenv('VOICE_SERVICE_ENDPOINT')
-        vad_model, voice_model = build_vad_and_voice(voice_endpoint)
+    # load voice identifier + VAD - load always, even if not needed
+    voice_endpoint = os.getenv('VOICE_SERVICE_ENDPOINT')
+    vad_model, voice_model = build_vad_and_voice(voice_endpoint)
 
     # LLM + services
     gemini_key = os.getenv('GEMINI_API_KEY', '')
