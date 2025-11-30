@@ -1,8 +1,43 @@
 # blabin
-Adaptive agent for helping me learn French faster
+
+An adaptive French-learning agent designed to help improve faster. Blabin tailors content to your interests and focuses on the errors you actually make, creating a more targeted and meaningful learning experience.
 
 ## Introduction
 
+Having learned French with apps like Busuu and Duolingo over the past four years, I found it difficult to stay engaged with traditional apps beyond the B1 stage. Many tools treat every learner identically, giving equal weight to grammar, gender, vocabulary, and comprehension, regardless of your strengths or weaknesses.
+
+For me, some aspects of the language (like vocabulary) come naturally, while others (like grammatical gender) are harder to master. These apps repeatedly drill what I already know, while letting weak spots slide. They also rarely offer content that’s engaging or personally relevant.
+
+Blabin addresses these issues by:
+
+- Pulling topical, real-world subjects (via Tavily search and Radio-Canada articles)
+
+- Tracking user errors in real time
+
+- Adapting future prompts based on what you actually struggle with
+
+## Interface
+
+Blabin is designed to run on a small edge device (like raspberry pi). A cron job triggers every two hours and reads aloud a new Radio-Canada article for the user to discuss. If the user engages, the conversation continues until they end the session. At that point, Blabin tabulates errors, computes a level estimate, and logs the results to BigQuery.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant User
+  participant Cron as Cron scheduler
+  participant App as Edge app voice agent
+  participant BQ as BigQuery
+
+  Cron->>App: Trigger every 2 hours start session
+  App->>User: Read new article and prompt to speak
+  User->>App: Speak response audio
+  loop
+    App->>User: Follow up question and feedback
+    User->>App: Follow up engagement
+  end
+  User->>App: Request session end
+  App->>BQ: Log errors and session summary
+```
 ## Design
 
 The diagram shows a simple flow from development to runtime: GitHub Actions builds the voice service and the Python app images and pushes them to Artifact Registry in Google Cloud, while Terraform provisions the cloud side resources such as Artifact Registry, Cloud Run for the voice API, BigQuery, IAM, MLflow tracking, and Cloud Logging. At the edge, the Python app container is pulled from Artifact Registry and runs scheduled tasks via cron to fetch mistakes from BigQuery and track metrics to MLflow, while the user can speak to the voice agent; the edge app streams audio frames to the Cloud Run voice service over HTTP for VAD and embeddings and uses the responses to drive the interaction.
@@ -33,8 +68,8 @@ graph TD
     IAM --> MLF
   end
 
-  subgraph Voice Service Cloud Run in GCP
-    CR -->|HTTP JSON| VAD[FastAPI endpoints health vad embed]
+  subgraph Voice Service Cloud Run
+    CR -->|HTTP JSON| VAD[FastAPI endpoint]
     VAD --> Silero[Silero VAD torch hub]
     VAD --> Resemb[Resemblyzer]
   end
